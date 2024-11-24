@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from cassandra.cluster import Cluster
 from cassandra.query import SimpleStatement
 from geolib import geohash
+from pydantic import BaseModel
 import uuid
 
 app = FastAPI()
@@ -21,28 +22,51 @@ geohash_code = geohash.encode(latitude, longitude, precision=12)
 # Use the keyspace
 session.set_keyspace('roamly_keyspace')
 
+
+# Define a Pydantic model for request validation
+class Property(BaseModel):
+    latitude: float
+    longitude: float
+    name: str
+    city: str
+    country: str
+    information_Chinese: str
+    information_Indian: str
+    information_British: str
+
 @app.post("/add-property/")
-async def add_property(
-    # geohash_code: str,
-    # name: str,
-    # city: str,
-    # country: str,
-    # information_Chinese: str,
-    # information_Indian: str,
-    # information_British: str
-):
+async def add_property(property: Property):
+    """
+    Dynamically adds a property to the Cassandra database.
+    """
     try:
+        # Generate geohash from latitude and longitude
+        geohash_code = geohash.encode(property.latitude, property.longitude, precision=12)
+
+        # Generate a unique property_id
+        property_id = uuid.uuid4()
+
+        # Prepare the query for inserting data
         insert_query = SimpleStatement("""
-            INSERT INTO properties (geohash_code, property_id, name, city, country, 
-            information_Chinese, information_Indian, information_British) 
+            INSERT INTO properties (
+                geohash_code, property_id, name, city, country, 
+                information_Chinese, information_Indian, information_British
+            ) 
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """)
-        session.execute(insert_query, (geohash_code, uuid.uuid4(), 'Hollywood Sign', 'Los Angeles', 'USA', 
-                               "sdsd", "sdsdsdsd", "sdsds"))
-        
-        return {"message": "Property added successfully"}
+
+        # Execute the query with dynamic data
+        session.execute(insert_query, (
+            geohash_code, property_id, property.name, property.city, property.country, 
+            property.information_Chinese, property.information_Indian, property.information_British
+        ))
+
+        # Return a success message with the generated property_id
+        return {"message": "Property added successfully", "property_id": str(property_id)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Raise an HTTP exception in case of an error
+        raise HTTPException(status_code=500, detail=f"Failed to add property: {e}")
+
 @app.get("/get-properties/")
 async def get_properties():
     try:

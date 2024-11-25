@@ -3,9 +3,19 @@ from cassandra.cluster import Cluster
 from cassandra.query import SimpleStatement
 from geolib import geohash
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 import uuid
 
 app = FastAPI()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Replace "*" with specific domains in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Connect to the local Cassandra cluster
 cluster = Cluster(['127.0.0.1'])  # Localhost
@@ -18,7 +28,6 @@ latitude = 34.13425221700465
 longitude = -118.32189112901952
 # Encode the coordinates into a geohash
 geohash_code = geohash.encode(latitude, longitude, precision=12)
-
 # Use the keyspace
 session.set_keyspace('roamly_keyspace')
 
@@ -30,16 +39,27 @@ class Property(BaseModel):
     name: str
     city: str
     country: str
-    information_Chinese: str
-    information_Indian: str
-    information_British: str
 
 @app.post("/add-property/")
 async def add_property(property: Property):
     """
-    Dynamically adds a property to the Cassandra database.
+    Dynamically adds a property to the Cassandra database, 
+    creating the table if it does not exist.
     """
     try:
+        # Create the table if it doesn't exist
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS properties (
+            geohash_code text,
+            property_id uuid,
+            name text,
+            city text,
+            country text,
+            PRIMARY KEY (geohash_code, property_id)
+        )
+        """
+        session.execute(create_table_query)
+
         # Generate geohash from latitude and longitude
         geohash_code = geohash.encode(property.latitude, property.longitude, precision=12)
 
@@ -49,16 +69,14 @@ async def add_property(property: Property):
         # Prepare the query for inserting data
         insert_query = SimpleStatement("""
             INSERT INTO properties (
-                geohash_code, property_id, name, city, country, 
-                information_Chinese, information_Indian, information_British
+                geohash_code, property_id, name, city, country
             ) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s)
         """)
 
         # Execute the query with dynamic data
         session.execute(insert_query, (
-            geohash_code, property_id, property.name, property.city, property.country, 
-            property.information_Chinese, property.information_Indian, property.information_British
+            geohash_code, property_id, property.name, property.city, property.country
         ))
 
         # Return a success message with the generated property_id
@@ -79,9 +97,6 @@ async def get_properties():
                 "name": row.name,
                 "city": row.city,
                 "country": row.country,
-                "information_Chinese": row.information_Chinese,
-                "information_Indian": row.information_Indian,
-                "information_British": row.information_British,
             }
             for row in rows
         ]

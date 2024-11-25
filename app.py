@@ -1,13 +1,13 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from cassandra.cluster import Cluster
 from cassandra.query import SimpleStatement
 from geolib import geohash
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from geopy.geocoders import Nominatim
+from pydantic import BaseModel
 import uuid
 
 def get_coordinates(location):
+    from geopy.geocoders import Nominatim
     geolocator = Nominatim(user_agent="myApp")
     location_obj = geolocator.geocode(location)
     if location_obj:
@@ -50,7 +50,6 @@ async def add_property(property: Property):
     try:
         # property address
         address = property.name + ", " + property.city
-        print("address is " + address)
         # Geocode the property name to get latitude and longitude
         lat, lon = get_coordinates(address)
         
@@ -96,10 +95,25 @@ async def add_property(property: Property):
         raise HTTPException(status_code=500, detail=f"Failed to add property: {e}")
 
 @app.get("/get-properties/")
-async def get_properties():
+async def get_properties(
+    lat: float = Query(..., description="Latitude of the location"),
+    long: float = Query(..., description="Longitude of the location")
+):
+    """
+    Retrieves properties near the provided latitude and longitude based on geohash.
+    The geohash of the given coordinates is calculated, and properties with the same
+    geohash are fetched from the database.
+    """
     try:
-        select_query = "SELECT * FROM properties"
-        rows = session.execute(select_query)
+        # Calculate the geohash based on latitude and longitude
+        geohash_code = geohash.encode(lat, long, precision=12)
+
+        # Query the Cassandra database for properties with matching geohash
+        select_query = """
+        SELECT * FROM properties WHERE geohash_code = %s
+        """
+        rows = session.execute(select_query, (geohash_code,))
+
         properties = [
             {
                 "geohash_code": row.geohash_code,
@@ -110,6 +124,10 @@ async def get_properties():
             }
             for row in rows
         ]
+        
+        # Return the properties found
         return {"properties": properties}
+
     except Exception as e:
+        # Raise an HTTP exception in case of an error
         raise HTTPException(status_code=500, detail=str(e))

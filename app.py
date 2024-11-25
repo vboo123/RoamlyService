@@ -4,7 +4,16 @@ from cassandra.query import SimpleStatement
 from geolib import geohash
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from geopy.geocoders import Nominatim
 import uuid
+
+def get_coordinates(location):
+    geolocator = Nominatim(user_agent="myApp")
+    location_obj = geolocator.geocode(location)
+    if location_obj:
+        return location_obj.latitude, location_obj.longitude
+    else:
+        return None, None
 
 app = FastAPI()
 
@@ -21,22 +30,13 @@ app.add_middleware(
 cluster = Cluster(['127.0.0.1'])  # Localhost
 session = cluster.connect()
 
-
-
-# Set some sample Geohashing
-latitude = 34.13425221700465 
-longitude = -118.32189112901952
-# Encode the coordinates into a geohash
-geohash_code = geohash.encode(latitude, longitude, precision=12)
 # Use the keyspace
 session.set_keyspace('roamly_keyspace')
 
 
 # Define a Pydantic model for request validation
 class Property(BaseModel):
-    latitude: float
-    longitude: float
-    name: str
+    name: str  # Instead of latitude and longitude, we take name (address)
     city: str
     country: str
 
@@ -44,9 +44,19 @@ class Property(BaseModel):
 async def add_property(property: Property):
     """
     Dynamically adds a property to the Cassandra database, 
-    creating the table if it does not exist.
+    creating the table if it does not exist. The latitude and longitude
+    are retrieved via geocoding the property name.
     """
     try:
+        # property address
+        address = property.name + ", " + property.city
+        print("address is " + address)
+        # Geocode the property name to get latitude and longitude
+        lat, lon = get_coordinates(address)
+        
+        if lat is None or lon is None:
+            raise HTTPException(status_code=400, detail="Unable to geocode the property name")
+
         # Create the table if it doesn't exist
         create_table_query = """
         CREATE TABLE IF NOT EXISTS properties (
@@ -61,7 +71,7 @@ async def add_property(property: Property):
         session.execute(create_table_query)
 
         # Generate geohash from latitude and longitude
-        geohash_code = geohash.encode(property.latitude, property.longitude, precision=12)
+        geohash_code = geohash.encode(lat, lon, precision=12)
 
         # Generate a unique property_id
         property_id = uuid.uuid4()
@@ -103,4 +113,3 @@ async def get_properties():
         return {"properties": properties}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-

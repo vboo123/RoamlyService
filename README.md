@@ -8,11 +8,9 @@ Make sure to use pyEnv 3.11 or below (not 3.12 since some libraries dont have th
 
 To make a post request
 
-curl -X POST "http://127.0.0.1:8000/add-property/" \
+curl -X POST "http://192.168.1.68:8000/add-property/" \
 -H "Content-Type: application/json" \
 -d '{
-"latitude": 34.13425221700465,
-"longitude": -118.32189112901952,
 "name": "Hollywood Sign",
 "city": "Los Angeles",
 "country": "USA"

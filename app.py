@@ -39,6 +39,7 @@ class Property(BaseModel):
     name: str  # Instead of latitude and longitude, we take name (address)
     city: str
     country: str
+    mediumResponseIndiaCarsShopping: str
 
 @app.post("/add-property/")
 async def add_property(property: Property):
@@ -52,7 +53,6 @@ async def add_property(property: Property):
         address = property.name + ", " + property.city
         # Geocode the property name to get latitude and longitude
         lat, lon = get_coordinates(address)
-        
         if lat is None or lon is None:
             raise HTTPException(status_code=400, detail="Unable to geocode the property name")
 
@@ -64,13 +64,14 @@ async def add_property(property: Property):
             name text,
             city text,
             country text,
+            mediumResponseIndiaCarsShopping text,
             PRIMARY KEY (geohash_code, property_id)
         )
         """
         session.execute(create_table_query)
 
         # Generate geohash from latitude and longitude
-        geohash_code = geohash.encode(lat, lon, precision=12)
+        geohash_code = geohash.encode(lat, lon, precision=2)
 
         # Generate a unique property_id
         property_id = uuid.uuid4()
@@ -78,14 +79,14 @@ async def add_property(property: Property):
         # Prepare the query for inserting data
         insert_query = SimpleStatement("""
             INSERT INTO properties (
-                geohash_code, property_id, name, city, country
+                geohash_code, property_id, name, city, country, mediumResponseIndiaCarsShopping
             ) 
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s)
         """)
 
         # Execute the query with dynamic data
         session.execute(insert_query, (
-            geohash_code, property_id, property.name, property.city, property.country
+            geohash_code, property_id, property.name, property.city, property.country, property.mediumResponseIndiaCarsShopping
         ))
 
         # Return a success message with the generated property_id
@@ -106,7 +107,8 @@ async def get_properties(
     """
     try:
         # Calculate the geohash based on latitude and longitude
-        geohash_code = geohash.encode(lat, long, precision=12)
+        geohash_code = geohash.encode(lat, long, precision=2)
+        print(geohash_code)
 
         # Query the Cassandra database for properties with matching geohash
         select_query = """
@@ -121,6 +123,7 @@ async def get_properties(
                 "name": row.name,
                 "city": row.city,
                 "country": row.country,
+                "mediumresponseindiacarsshopping": row.mediumresponseindiacarsshopping,
             }
             for row in rows
         ]

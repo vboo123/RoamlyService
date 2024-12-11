@@ -1,20 +1,11 @@
 from fastapi import FastAPI, HTTPException, Query
 from cassandra.cluster import Cluster
 from cassandra.query import SimpleStatement
-from geolib import geohash
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uuid
 
-def get_coordinates(location):
-    from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="myApp")
-    location_obj = geolocator.geocode(location)
-    if location_obj:
-        return location_obj.latitude, location_obj.longitude
-    else:
-        return None, None
-
+# FastAPI app initialization
 app = FastAPI()
 
 # Add CORS middleware
@@ -32,6 +23,59 @@ session = cluster.connect()
 
 # Use the keyspace
 session.set_keyspace('roamly_keyspace')
+
+# Define a Pydantic model for user registration
+class User(BaseModel):
+    name: str
+    email: str
+    country: str
+    interestOne: str
+    interestTwo: str
+    interestThree: str
+    age: str
+
+@app.post("/register-user/")
+async def register_user(user: User):
+    """
+    Registers a new user by adding their information to the Users table.
+    The table is created dynamically if it doesn't exist.
+    """
+    try:
+        # Create the Users table if it doesn't exist
+        create_users_table_query = """
+        CREATE TABLE IF NOT EXISTS users (
+            user_id uuid PRIMARY KEY,
+            name text,
+            email text,
+            country text,
+            interestOne text,
+            interestTwo text,
+            interestThree text,
+            age text
+        )
+        """
+        session.execute(create_users_table_query)
+
+        # Generate a unique user_id
+        user_id = uuid.uuid4()
+
+        # Prepare the query for inserting user data
+        insert_user_query = SimpleStatement("""
+            INSERT INTO users (user_id, name, email, country, interestOne, interestTwo, interestThree, age)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """)
+
+        # Execute the insert query with user data
+        session.execute(insert_user_query, (
+            user_id, user.name, user.email, user.country, user.interestOne, user.interestTwo, user.interestThree, user.age
+        ))
+
+        # Return a success message with the generated user_id
+        return {"message": "User registered successfully", "user_id": str(user_id)}
+
+    except Exception as e:
+        # Raise an HTTP exception in case of an error
+        raise HTTPException(status_code=500, detail=f"Failed to register user: {e}")
 
 
 # Define a Pydantic model for request validation
@@ -110,11 +154,16 @@ async def get_properties(
         geohash_code = geohash.encode(lat, long, precision=2)
         print(geohash_code)
 
+        # # Query the Cassandra database for properties with matching geohash
+        # select_query = """
+        # SELECT * FROM properties WHERE geohash_code = %s
+        # """
+        # rows = session.execute(select_query, (geohash_code,))
         # Query the Cassandra database for properties with matching geohash
         select_query = """
-        SELECT * FROM properties WHERE geohash_code = %s
+        SELECT * FROM properties
         """
-        rows = session.execute(select_query, (geohash_code,))
+        rows = session.execute(select_query)
 
         properties = [
             {

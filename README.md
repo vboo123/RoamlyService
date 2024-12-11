@@ -7,7 +7,7 @@ We can use Postman or something to test these endpoints
 Make sure to use pyEnv 3.11 or below (not 3.12 since some libraries dont have the support for it)
 
 To make a post request
-curl -X POST "http://192.168.1.68:8000/add-property/" \
+curl -X POST "http://192.168.1.78:8000/add-property/" \
 -H "Content-Type: application/json" \
 -d '{
 "name": "Rodeo Drive",
@@ -17,3 +17,16 @@ curl -X POST "http://192.168.1.68:8000/add-property/" \
 }'
 
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+Add user for POST Request
+curl -X POST "http://192.168.1.78:8000/register-user/" \
+-H "Content-Type: application/json" \
+-d '{
+"name": "Vboo",
+"email": "vaibhavgargpgw@gmail.com",
+"country": "USA",
+"interestOne": "Biking",
+"interestTwo": "Driving",
+"interestThree": "Shopping",
+"age": "5"
+}'

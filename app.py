@@ -3,6 +3,7 @@ from cassandra.cluster import Cluster
 from cassandra.query import SimpleStatement
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from geolib import geohash
 import uuid
 
 # FastAPI app initialization
@@ -183,3 +184,30 @@ async def get_properties(
     except Exception as e:
         # Raise an HTTP exception in case of an error
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/login/")
+async def login_user(name: str = Query(..., description="Name of the user"), email: str = Query(..., description="Email of the user")):
+    """
+    Authenticates a user by checking if their name and email exist in the database.
+    If found, returns the user_id associated with the user.
+    """
+    try:
+        # Prepare the query to find the user by name and email
+        select_query = SimpleStatement("""
+            SELECT user_id FROM users WHERE name = %s AND email = %s ALLOW FILTERING
+        """)
+
+        # Execute the query with the provided name and email
+        rows = session.execute(select_query, (name, email))
+
+        # Fetch the first matching row (if any)
+        user_row = rows.one()
+
+        if user_row:
+            return {"message": "Login successful", "user_id": str(user_row.user_id)}
+        else:
+            raise HTTPException(status_code=404, detail="User not found")
+
+    except Exception as e:
+        # Handle any exceptions and return an HTTP error
+        raise HTTPException(status_code=500, detail=f"Login failed: {e}")

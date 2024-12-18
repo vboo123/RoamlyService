@@ -141,7 +141,7 @@ async def populate_responses(landmark, responseJSONFile):
         # Check if the key already exists in the JSON file
         if not check_key_exists(key, responseJSONFile):
             # response = generate_prompt_and_get_response(interest_combo, language, age, format, country, landmark)
-            response = "test response"
+            response = "test response blahblah blah"
 
             # response_content = response.choices[0].message.content
             response_content = response
@@ -161,32 +161,52 @@ async def populate_responses(landmark, responseJSONFile):
                 return response_data_str
             except json.JSONDecodeError:
                 return None
+            
+
+def insert_cassandra_db(responseJSON, landmark):
+     # delete responses.json
+    os.remove("responses.json")
+    print(type(responseJSON))
+    if responseJSON:
+        insert_query = """
+                INSERT INTO properties (
+                    geoHash, landmarkName, country, city, responses
+                ) 
+                VALUES (%s, %s, %s, %s, %s)"""
+        # Execute the query with dynamic data
+        session.execute(insert_query, (
+            "293893", landmark, "Los Angeles", "USA", responseJSON
+        ))
+    else:
+        print("Error creating JSON file")
 
 async def main():
     for landmark in landmarks:
         landmarkResponses = check_landmark_exists(landmark)
-        if landmarkResponses != None:
+        if landmarkResponses is not None:
             print("landmark exists\n")
             print(landmarkResponses)
-            # get the existing JSON file for the responses, add the necessary responses, and re add it to the table for that respective property
 
+            # Check if landmarkResponses is a string and needs to be converted to JSON
+            if isinstance(landmarkResponses, str):
+                try:
+                    landmarkResponses = json.loads(landmarkResponses)  # Convert string to JSON (dict/list)
+                    print(f"Converted string to JSON for {landmark}")
+                except json.JSONDecodeError:
+                    print(f"Error: landmarkResponses for {landmark} is not valid JSON string.")
+                    break  
+            # Open the file for writing and update the content
+            with open('responses.json', 'w') as file:
+                json.dump(landmarkResponses, file, indent=4)
+            print(f"Updated responses.json with responses for {landmark}")
+            responseJSON = await populate_responses(landmark, "responses.json")
+            insert_cassandra_db(responseJSON, landmark)
         else:
             print("landmark doesnt exist")
             # create JSON file with responses, and then insert all the required values into the properties table
             responseJSON = await populate_responses(landmark, "responses.json")
-            print(type(responseJSON))
-            if responseJSON:
-                insert_query = """
-                        INSERT INTO properties (
-                            geoHash, landmarkName, country, city, responses
-                        ) 
-                        VALUES (%s, %s, %s, %s, %s)"""
-                # Execute the query with dynamic data
-                session.execute(insert_query, (
-                    "293893", landmark, "Los Angeles", "USA", responseJSON
-                ))
-            else:
-                print("Error creating JSON file")
+            insert_cassandra_db(responseJSON, landmark)
+           
 
 if __name__ == "__main__":
     asyncio.run(main())

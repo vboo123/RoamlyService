@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 from itertools import combinations, product
 from cassandra.cluster import Cluster
 import json
-
+from geolib import geohash
+from geopy.geocoders import Nominatim
 
 # Load environment variables
 load_dotenv()
@@ -115,8 +116,6 @@ def update_json_file(responseJSONFile, key, response_content):
     """
     Update the JSON file with new data without overwriting the existing data.
     """
-
-    print("reached here")
     # Check if the file exists
     if os.path.exists(responseJSONFile):
         with open(responseJSONFile, 'r') as file:
@@ -172,8 +171,16 @@ async def populate_responses(landmark, responseJSONFile):
             return response_data_str
         except json.JSONDecodeError:
             return None
-            
 
+def get_coordinates(location):
+    geolocator = Nominatim(user_agent="myApp")
+    location_obj = geolocator.geocode(location)
+    if location_obj:
+        return location_obj.latitude, location_obj.longitude
+    else:
+        return None, None
+
+# right now, need to manually set city name, but eventually, will automate this
 def insert_cassandra_db(responseJSON, landmark):
      # delete responses.json
     os.remove("responses.json")
@@ -183,9 +190,12 @@ def insert_cassandra_db(responseJSON, landmark):
                     geoHash, landmarkName, country, city, responses
                 ) 
                 VALUES (%s, %s, %s, %s, %s)"""
-        # Execute the query with dynamic data
+        # structure address = property.name + ", " + property.city
+        address = landmark + ", " + "Los Angeles"
+        lat, lon = get_coordinates(address)
+        geohash_code = geohash.encode(lat, lon, precision=2)
         session.execute(insert_query, (
-            "293893", landmark, "Los Angeles", "USA", responseJSON
+            geohash_code, landmark, "Los Angeles", "United States of America", responseJSON
         ))
     else:
         print("Error creating JSON file")
@@ -194,25 +204,19 @@ async def main():
     for landmark in landmarks:
         landmarkResponses = check_landmark_exists(landmark)
         if landmarkResponses is not None:
-            print("landmark exists\n")
-            print(landmarkResponses)
-
             # Check if landmarkResponses is a string and needs to be converted to JSON
             if isinstance(landmarkResponses, str):
                 try:
                     landmarkResponses = json.loads(landmarkResponses)  # Convert string to JSON (dict/list)
-                    print(f"Converted string to JSON for {landmark}")
                 except json.JSONDecodeError:
                     print(f"Error: landmarkResponses for {landmark} is not valid JSON string.")
                     break  
             # Open the file for writing and update the content
             with open('responses.json', 'w') as file:
                 json.dump(landmarkResponses, file, indent=4)
-            print(f"Updated responses.json with responses for {landmark}")
             responseJSON = await populate_responses(landmark, "responses.json")
             insert_cassandra_db(responseJSON, landmark)
         else:
-            print("landmark doesnt exist")
             # create JSON file with responses, and then insert all the required values into the properties table
             responseJSON = await populate_responses(landmark, "responses.json")
             insert_cassandra_db(responseJSON, landmark)

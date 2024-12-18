@@ -141,7 +141,7 @@ async def populate_responses(landmark, responseJSONFile):
         # Check if the key already exists in the JSON file
         if not check_key_exists(key, responseJSONFile):
             # response = generate_prompt_and_get_response(interest_combo, language, age, format, country, landmark)
-            response = "test response blahblah blah"
+            response = "test response"
 
             # response_content = response.choices[0].message.content
             response_content = response
@@ -151,22 +151,21 @@ async def populate_responses(landmark, responseJSONFile):
         else:
             print(f"Key already exists: {key}") 
         
-        # Return the final JSON file content as a string to insert into the database
-        with open(responseJSONFile, 'r') as file:
-            try:
-                # Load the JSON data
-                response_data = json.load(file)
-                # Convert the JSON object to a string
-                response_data_str = json.dumps(response_data)
-                return response_data_str
-            except json.JSONDecodeError:
-                return None
+    # Return the final JSON file content as a string to insert into the database
+    with open(responseJSONFile, 'r') as file:
+        try:
+            # Load the JSON data
+            response_data = json.load(file)
+            # Convert the JSON object to a string
+            response_data_str = json.dumps(response_data)
+            return response_data_str
+        except json.JSONDecodeError:
+            return None
             
 
 def insert_cassandra_db(responseJSON, landmark):
      # delete responses.json
     os.remove("responses.json")
-    print(type(responseJSON))
     if responseJSON:
         insert_query = """
                 INSERT INTO properties (

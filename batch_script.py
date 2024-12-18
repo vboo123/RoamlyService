@@ -96,9 +96,20 @@ import json
 import os
 
 def check_key_exists(key, responseJSONFile):
-    # Dummy function to check if the key already exists.
-    # You would probably want to check it in the Cassandra DB or a file.
-    return False  # For the sake of example, assume the key doesn't exist.
+    # Check if the file exists
+    if os.path.exists(responseJSONFile):
+        with open(responseJSONFile, 'r') as file:
+            try:
+                # Load existing data
+                existing_data = json.load(file)
+            except json.JSONDecodeError:
+                # If the file is empty or not a valid JSON, return False
+                return False
+        # Check if the key exists in the loaded JSON data
+        return key in existing_data
+    else:
+        # If the file doesn't exist, return False
+        return False
 
 def update_json_file(responseJSONFile, key, response_content):
     """

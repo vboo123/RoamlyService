@@ -1,8 +1,10 @@
+import asyncio
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
 from itertools import combinations, product
 from cassandra.cluster import Cluster
+import json
 
 
 # Load environment variables
@@ -68,8 +70,8 @@ def check_landmark_exists(landmark):
     
     for row in rows:
         if row:
-            return True
-    return False
+            return row.responses
+    return None
 
 # Function to generate prompt and get response from OpenAI API
 def generate_prompt_and_get_response(interest_combo, language, age, format, country, landmark):
@@ -90,32 +92,101 @@ def generate_prompt_and_get_response(interest_combo, language, age, format, coun
 
     return response
 
-for landmark in landmarks:
-    landmarkExists = check_landmark_exists(landmark)
-    if landmarkExists:
-        print("landmark exists")
+import json
+import os
+
+def check_key_exists(key, responseJSONFile):
+    # Dummy function to check if the key already exists.
+    # You would probably want to check it in the Cassandra DB or a file.
+    return False  # For the sake of example, assume the key doesn't exist.
+
+def update_json_file(responseJSONFile, key, response_content):
+    """
+    Update the JSON file with new data without overwriting the existing data.
+    """
+
+    print("reached here")
+    # Check if the file exists
+    if os.path.exists(responseJSONFile):
+        with open(responseJSONFile, 'r') as file:
+            try:
+                # Load existing data
+                existing_data = json.load(file)
+            except json.JSONDecodeError:
+                # In case the file is empty or not valid JSON
+                existing_data = {}
     else:
-       print("landmark doesnt exist")
+        # If the file doesn't exist, initialize an empty dictionary
+        existing_data = {}
 
-# # Iterate through all combinations and get responses
-# for language, interest_combo, age, format, country, landmark in product(language_combinations, interest_combinations, age_combinations, format_combinations, country_combinations, landmark_combinations):
-#     key = f"{landmark.replace(' ', '')}_" \
-#         f"{interest_combo[0].replace(' ', '')}_" \
-#         f"{interest_combo[1].replace(' ', '')}_" \
-#         f"{interest_combo[2].replace(' ', '')}_" \
-#         f"{country.replace(' ', '')}_" \
-#         f"{language.replace(' ', '')}_" \
-#         f"{age.replace(' ', '')}_" \
-#         f"{format.replace(' ', '')}"
-    
-#     # Check if the key already exists
-#     if not check_key_exists(key):
-#         # Generate a prompt and get a response if the key does not exist
-#         response = generate_prompt_and_get_response(interest_combo, language, age, format, country, landmark)
+    # Add the new response to the existing data
+    existing_data[key] = response_content
 
-#         # Insert the key and its data into the properties table
-#         insert_key(key, landmark, interest_combo, country, language, age, format)
+    # Write the updated data back to the file
+    with open(responseJSONFile, 'w') as file:
+        json.dump(existing_data, file, indent=4)
 
-#         print(response.choices[0].message.content)  # Output the response
-#     else:
-#         print(f"Key already exists: {key}") 
+async def populate_responses(landmark, responseJSONFile):
+    # Iterate through all combinations and get responses
+    for language, interest_combo, age, format, country in product(language_combinations, interest_combinations, age_combinations, format_combinations, country_combinations):
+        key = f"{landmark.replace(' ', '')}_" \
+              f"{interest_combo[0].replace(' ', '')}_" \
+              f"{interest_combo[1].replace(' ', '')}_" \
+              f"{interest_combo[2].replace(' ', '')}_" \
+              f"{country.replace(' ', '')}_" \
+              f"{language.replace(' ', '')}_" \
+              f"{age.replace(' ', '')}_" \
+              f"{format.replace(' ', '')}"
+        
+        # Check if the key already exists in the JSON file
+        if not check_key_exists(key, responseJSONFile):
+            # response = generate_prompt_and_get_response(interest_combo, language, age, format, country, landmark)
+            response = "test response"
+
+            # response_content = response.choices[0].message.content
+            response_content = response
+
+            update_json_file(responseJSONFile, key, response_content)
+            print(response_content)  # Output the response
+        else:
+            print(f"Key already exists: {key}") 
+        
+        # Return the final JSON file content as a string to insert into the database
+        with open(responseJSONFile, 'r') as file:
+            try:
+                # Load the JSON data
+                response_data = json.load(file)
+                # Convert the JSON object to a string
+                response_data_str = json.dumps(response_data)
+                return response_data_str
+            except json.JSONDecodeError:
+                return None
+
+async def main():
+    for landmark in landmarks:
+        landmarkResponses = check_landmark_exists(landmark)
+        if landmarkResponses != None:
+            print("landmark exists\n")
+            print(landmarkResponses)
+            # get the existing JSON file for the responses, add the necessary responses, and re add it to the table for that respective property
+
+        else:
+            print("landmark doesnt exist")
+            # create JSON file with responses, and then insert all the required values into the properties table
+            responseJSON = await populate_responses(landmark, "responses.json")
+            print(type(responseJSON))
+            if responseJSON:
+                insert_query = """
+                        INSERT INTO properties (
+                            geoHash, landmarkName, country, city, responses
+                        ) 
+                        VALUES (%s, %s, %s, %s, %s)"""
+                # Execute the query with dynamic data
+                session.execute(insert_query, (
+                    "293893", landmark, "Los Angeles", "USA", responseJSON
+                ))
+            else:
+                print("Error creating JSON file")
+
+if __name__ == "__main__":
+    asyncio.run(main())

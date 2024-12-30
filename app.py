@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from geolib import geohash
 import uuid
+import json
 
 # FastAPI app initialization
 app = FastAPI()
@@ -81,69 +82,22 @@ async def register_user(user: User):
 
 # Define a Pydantic model for request validation
 class Property(BaseModel):
-    name: str  # Instead of latitude and longitude, we take name (address)
-    city: str
+    geohash: str
+    landmarkName: str  # Instead of latitude and longitude, we take name (address)
     country: str
-    mediumResponseIndiaCarsShopping: str
-
-@app.post("/add-property/")
-async def add_property(property: Property):
-    """
-    Dynamically adds a property to the Cassandra database, 
-    creating the table if it does not exist. The latitude and longitude
-    are retrieved via geocoding the property name.
-    """
-    try:
-        # property address
-        address = property.name + ", " + property.city
-        # Geocode the property name to get latitude and longitude
-        lat, lon = get_coordinates(address)
-        if lat is None or lon is None:
-            raise HTTPException(status_code=400, detail="Unable to geocode the property name")
-
-        # Create the table if it doesn't exist
-        create_table_query = """
-        CREATE TABLE IF NOT EXISTS properties (
-            geohash_code text,
-            property_id uuid,
-            name text,
-            city text,
-            country text,
-            mediumResponseIndiaCarsShopping text,
-            PRIMARY KEY (geohash_code, property_id)
-        )
-        """
-        session.execute(create_table_query)
-
-        # Generate geohash from latitude and longitude
-        geohash_code = geohash.encode(lat, lon, precision=2)
-
-        # Generate a unique property_id
-        property_id = uuid.uuid4()
-
-        # Prepare the query for inserting data
-        insert_query = SimpleStatement("""
-            INSERT INTO properties (
-                geohash_code, property_id, name, city, country, mediumResponseIndiaCarsShopping
-            ) 
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """)
-
-        # Execute the query with dynamic data
-        session.execute(insert_query, (
-            geohash_code, property_id, property.name, property.city, property.country, property.mediumResponseIndiaCarsShopping
-        ))
-
-        # Return a success message with the generated property_id
-        return {"message": "Property added successfully", "property_id": str(property_id)}
-    except Exception as e:
-        # Raise an HTTP exception in case of an error
-        raise HTTPException(status_code=500, detail=f"Failed to add property: {e}")
+    city: str
+    responses: str
 
 @app.get("/get-properties/")
 async def get_properties(
     lat: float = Query(..., description="Latitude of the location"),
-    long: float = Query(..., description="Longitude of the location")
+    long: float = Query(..., description="Longitude of the location"),
+    interestOne: str = Query(..., description="interestOne of user"),
+    interestTwo: str = Query(..., description="interestTwo of user"),
+    interestThree: str = Query(..., description="interestThree of user"),
+    userAge: str = Query(..., description="age of user"),
+    userCountry: str = Query(..., description="country of user"),
+    userLanguage: str = Query(..., description="language of user")
 ):
     """
     Retrieves properties near the provided latitude and longitude based on geohash.
@@ -155,28 +109,36 @@ async def get_properties(
         geohash_code = geohash.encode(lat, long, precision=2)
         print(geohash_code)
 
-        # # Query the Cassandra database for properties with matching geohash
-        # select_query = """
-        # SELECT * FROM properties WHERE geohash_code = %s
-        # """
-        # rows = session.execute(select_query, (geohash_code,))
         # Query the Cassandra database for properties with matching geohash
         select_query = """
-        SELECT * FROM properties
+        SELECT * FROM properties WHERE geohash = %s
         """
-        rows = session.execute(select_query)
+        rows = session.execute(select_query, (f'{geohash_code}',))
 
-        properties = [
-            {
-                "geohash_code": row.geohash_code,
-                "property_id": str(row.property_id),  # Convert UUID to string
-                "name": row.name,
+        classify_age = lambda age: "young" if age < 30 else "middleage" if age <= 60 else "old"
+
+        properties = []
+        for row in rows:
+            landmark_name = row.landmarkname.replace(" ", "")
+
+            # Define the keys to extract from the responses JSON
+            keys_to_extract = [f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_small", f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_middle", f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_large"]
+
+            # Parse the JSON structure in row.responses
+            responses_json = json.loads(row.responses)
+            # Filter the desired keys from the JSON
+            filtered_responses = {key: responses_json.get(f'{key}') for key in keys_to_extract}
+            print("filtered all responses")
+            # Append the property with filtered responses
+            properties.append({
+                "geohash": row.geohash,
+                "landmarkName": row.landmarkname,
                 "city": row.city,
                 "country": row.country,
-                "mediumresponseindiacarsshopping": row.mediumresponseindiacarsshopping,
-            }
-            for row in rows
-        ]
+                "responses": filtered_responses,
+            })
+
+            print("reached here")
         
         # Return the properties found
         return {"properties": properties}

@@ -7,6 +7,8 @@ from cassandra.cluster import Cluster
 import json
 from geolib import geohash
 from geopy.geocoders import Nominatim
+from gpt4all import GPT4All
+import sys
 
 # Load environment variables
 load_dotenv()
@@ -19,8 +21,8 @@ session = cluster.connect()
 session.set_keyspace('roamly_keyspace')
 
 # OpenAI API setup
-# api_key = os.getenv("OPENAI_API_KEY")
-api_key = "sds"
+api_key = os.getenv("OPENAI_API_KEY")
+# api_key = "sds"
 client = OpenAI(api_key=api_key)
 
 # Data inputs
@@ -38,10 +40,11 @@ interests = [
 #     "Mathematics", "Learning Science",
 #     "Volunteering"
 # ]
-ages = ["young", "middle age", "old"]
-formats = ["small", "medium", "large"]
+ages = ["young"]
+# formats = ["small", "medium", "large"]
+formats = ["small"]
 countries = ["United States of America"]
-landmarks = ["Hollywood Sign"]
+landmarks = ["Getty Center"]
 
 # Generate combinations of interests (3 at a time), languages, ages, formats
 interest_combinations = combinations(interests, 3)
@@ -56,6 +59,8 @@ def check_landmark_exists(landmark):
     create_table_query = """
         CREATE TABLE IF NOT EXISTS properties (
             geoHash TEXT,
+            latitude TEXT,
+            longitude TEXT,
             landmarkName TEXT,
             country TEXT,
             city TEXT,
@@ -78,18 +83,26 @@ def check_landmark_exists(landmark):
 def generate_prompt_and_get_response(interest_combo, language, age, format, country, landmark):
     prompt = f"Can you provide a lively, narrative-style history of {landmark} with engaging storytelling, fun facts, recent events, and tourist-friendly tips, especially tailored for an audience from {country} who speaks {language} and is interested in {interest_combo[0]}, {interest_combo[1]}, and {interest_combo[2]}? Include references to popular culture from that country or region to help engage them more. Keep it casual, friendly, and informative, and write in a way that's easy to read out loud. The story should touch on the cost or financial history behind {landmark}, architectural details, key political or social events that shaped its history, and information about who owns it now and how it is maintained or managed—all woven into one flowing, easy-to-read narrative without headers, bullet points, or sections. This should be tailored to a {age} audience and {format} response."
     
-    # Make OpenAI API call
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={
-         "type": "text"
-        },
-        temperature=1,
-        top_p=1,
-        frequency_penalty=0,
-        presence_penalty=0
-    )
+    # # Make OpenAI API call
+    # response = client.chat.completions.create(
+    #     model="gpt-4o-mini",
+    #     messages=[{"role": "user", "content": prompt}],
+    #     response_format={
+    #      "type": "text"
+    #     },
+    #     temperature=1,
+    #     top_p=1,
+    #     frequency_penalty=0,
+    #     presence_penalty=0
+    # )
+    response = ""  # Initialize an empty string to store the response
+    model = GPT4All(model_name='Meta-Llama-3-8B-Instruct.Q4_0.gguf', allow_download=False)
+    tokens = []
+    for token in model.generate(prompt, streaming=True):
+        response += token
+        sys.stdout.write(token)
+
+    sys.stdout.flush()
 
     return response
 
@@ -187,15 +200,15 @@ def insert_cassandra_db(responseJSON, landmark):
     if responseJSON:
         insert_query = """
                 INSERT INTO properties (
-                    geoHash, landmarkName, country, city, responses
+                    geoHash, latitude, longitude, landmarkName, country, city, responses
                 ) 
-                VALUES (%s, %s, %s, %s, %s)"""
+                VALUES (%s, %s, %s, %s, %s, %s, %s)"""
         # structure address = property.name + ", " + property.city
         address = landmark + ", " + "Los Angeles"
         lat, lon = get_coordinates(address)
         geohash_code = geohash.encode(lat, lon, precision=2)
         session.execute(insert_query, (
-            geohash_code, landmark, "Los Angeles", "United States of America", responseJSON
+            geohash_code, str(lat), str(lon), landmark, "Los Angeles", "United States of America", responseJSON
         ))
     else:
         print("Error creating JSON file")

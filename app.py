@@ -132,6 +132,8 @@ async def get_properties(
             # Append the property with filtered responses
             properties.append({
                 "geohash": row.geohash,
+                "latitude": row.latitude,
+                "longitude": row.longitude,
                 "landmarkName": row.landmarkname,
                 "city": row.city,
                 "country": row.country,

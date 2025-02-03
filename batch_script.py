@@ -29,22 +29,23 @@ client = OpenAI(api_key=api_key)
 languages = ["English"]
 # languages = ["English", "Mandarin", "Hindi", "Spanish", "French", "Standard Arabic", "Bengali", "Russian", "Portuguese", "Urdu"]
 interests = [
-    "Drawing", 
-    "Running", "Acting"
-]
-# interests = [
-#     "Drawing", "Writing", "Photography", "Crafting", "Music", "Acting",
-#     "Running", "Yoga", "Cycling", "Weightlifting", "Sports",
-#     "Reading", "Movies/TV Shows", "Gaming", "Cooking",
-#     "Traveling", "Food Tasting",
-#     "Mathematics", "Learning Science",
-#     "Volunteering"
-# ]
+  "Technology",
+  "Travel",
+  "Cooking",
+  "Fitness",
+  "Music",
+  "Photography",
+  "Sports",
+  "Gaming",
+  "Art",
+  "Writing",
+  "Science",
+  "Movies",
+];
 ages = ["young"]
-# formats = ["small", "medium", "large"]
-formats = ["small"]
+formats = ["small", "medium", "large"]
 countries = ["United States of America"]
-landmarks = ["Getty Center"]
+landmarks = ["Hollywood Sign"]
 
 # Generate combinations of interests (3 at a time), languages, ages, formats
 interest_combinations = combinations(interests, 3)
@@ -152,10 +153,11 @@ def update_json_file(responseJSONFile, key, response_content):
 async def populate_responses(landmark, responseJSONFile):
     # Iterate through all combinations and get responses
     for language, interest_combo, age, format, country in product(language_combinations, interest_combinations, age_combinations, format_combinations, country_combinations):
+        sorted_interest_combo = sorted(interest_combo)
         key = f"{landmark.replace(' ', '')}_" \
-              f"{interest_combo[0].replace(' ', '')}_" \
-              f"{interest_combo[1].replace(' ', '')}_" \
-              f"{interest_combo[2].replace(' ', '')}_" \
+              f"{sorted_interest_combo[0].replace(' ', '')}_" \
+              f"{sorted_interest_combo[1].replace(' ', '')}_" \
+              f"{sorted_interest_combo[2].replace(' ', '')}_" \
               f"{country.replace(' ', '')}_" \
               f"{language.replace(' ', '')}_" \
               f"{age.replace(' ', '')}_" \

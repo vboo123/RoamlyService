@@ -35,6 +35,7 @@ class User(BaseModel):
     interestTwo: str
     interestThree: str
     age: str
+    language: str
 
 @app.post("/register-user/")
 async def register_user(user: User):
@@ -53,7 +54,8 @@ async def register_user(user: User):
             interestOne text,
             interestTwo text,
             interestThree text,
-            age text
+            age text,
+            language text
         )
         """
         session.execute(create_users_table_query)
@@ -63,17 +65,17 @@ async def register_user(user: User):
 
         # Prepare the query for inserting user data
         insert_user_query = SimpleStatement("""
-            INSERT INTO users (user_id, name, email, country, interestOne, interestTwo, interestThree, age)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO users (user_id, name, email, country, interestOne, interestTwo, interestThree, age, language)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """)
 
         # Execute the insert query with user data
         session.execute(insert_user_query, (
-            user_id, user.name, user.email, user.country, user.interestOne, user.interestTwo, user.interestThree, user.age
+            user_id, user.name, user.email, user.country, user.interestOne, user.interestTwo, user.interestThree, user.age, user.language
         ))
 
         # Return a success message with the generated user_id
-        return {"message": "User registered successfully", "user_id": str(user_id)}
+        return {"message": "User registered successfully", "user_id": {str(user_id)}}
 
     except Exception as e:
         # Raise an HTTP exception in case of an error
@@ -158,7 +160,7 @@ async def login_user(name: str = Query(..., description="Name of the user"), ema
     try:
         # Prepare the query to find the user by name and email
         select_query = SimpleStatement("""
-            SELECT user_id FROM users WHERE name = %s AND email = %s ALLOW FILTERING
+            SELECT user_id , name, interestone, interesttwo, interestthree, age, country, language FROM users WHERE name = %s AND email = %s ALLOW FILTERING
         """)
 
         # Execute the query with the provided name and email
@@ -168,7 +170,7 @@ async def login_user(name: str = Query(..., description="Name of the user"), ema
         user_row = rows.one()
 
         if user_row:
-            return {"message": "Login successful", "user_id": str(user_row.user_id)}
+            return user_row
         else:
             raise HTTPException(status_code=404, detail="User not found")
 

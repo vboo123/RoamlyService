@@ -44,7 +44,7 @@ interests = [
 ];
 ages = ["young"]
 formats = ["small", "medium", "large"]
-countries = ["United States of America"]
+countries = ["United States"]
 landmarks = ["Hollywood Sign"]
 
 # Generate combinations of interests (3 at a time), languages, ages, formats
@@ -107,9 +107,6 @@ def generate_prompt_and_get_response(interest_combo, language, age, format, coun
 
     return response
 
-import json
-import os
-
 def check_key_exists(key, responseJSONFile):
     # Check if the file exists
     if os.path.exists(responseJSONFile):
@@ -165,8 +162,8 @@ async def populate_responses(landmark, responseJSONFile):
         
         # Check if the key already exists in the JSON file
         if not check_key_exists(key, responseJSONFile):
-            # response = generate_prompt_and_get_response(interest_combo, language, age, format, country, landmark)
-            response = "test response"
+            response = generate_prompt_and_get_response(interest_combo, language, age, format, country, landmark)
+            # response = "test response"
 
             # response_content = response.choices[0].message.content
             response_content = response

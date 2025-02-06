@@ -123,6 +123,8 @@ async def get_properties(
         for row in rows:
             landmark_name = row.landmarkname.replace(" ", "")
 
+            print("user country is ", userCountry)
+
             # Define the keys to extract from the responses JSON
             keys_to_extract = [f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_small", f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_middle", f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_large"]
 

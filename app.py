@@ -7,6 +7,7 @@ import json
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 import os
+from assembleResponse import assemble_response
 
 # FastAPI app initialization
 app = FastAPI()
@@ -20,11 +21,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MongoDB connection
-# Replace with your MongoDB connection string
-# Example for MongoDB Atlas: mongodb+srv://<username>:<password>@<cluster-url>/<dbname>
-mongo_client = MongoClient("mongodb://localhost:27017/")  # Local MongoDB - replace with your connection string
-db = mongo_client["roamly_db"]  # MongoDB database name
 
 # Define a Pydantic model for user registration
 class User(BaseModel):
@@ -167,6 +163,24 @@ async def login_user(name: str = Query(..., description="Name of the user"), ema
     except Exception as e:
         # Handle any exceptions and return an HTTP error
         raise HTTPException(status_code=500, detail=f"Login failed: {e}")
+    
+
+
+@app.get("/landmark-response")
+async def get_landmark_response(
+    landmark: str,
+    userCountry: str = "default",
+    interestOne: str = "",
+    interestTwo: str = "",
+    interestThree: str = ""
+):
+    interests = [interestOne, interestTwo, interestThree]
+    response = assemble_response(property_id=landmark, user_country=userCountry, interests=interests)
+    return {
+        "landmark": landmark,
+        "country": userCountry,
+        "response": response
+    }
 
 # Data migration function (optional)
 def migrate_data_from_cassandra():

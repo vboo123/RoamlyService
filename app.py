@@ -1,11 +1,13 @@
 from fastapi import FastAPI, HTTPException, Query
-from cassandra.cluster import Cluster
-from cassandra.query import SimpleStatement
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from geolib import geohash
 import uuid
 import json
+from pymongo import MongoClient
+from bson.objectid import ObjectId
+import os
+from assembleResponse import assemble_response
 
 # FastAPI app initialization
 app = FastAPI()
@@ -19,12 +21,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Connect to the local Cassandra cluster
-cluster = Cluster(['127.0.0.1'])  # Localhost
-session = cluster.connect()
-
-# Use the keyspace
-session.set_keyspace('roamly_keyspace')
 
 # Define a Pydantic model for user registration
 class User(BaseModel):
@@ -40,55 +36,34 @@ class User(BaseModel):
 @app.post("/register-user/")
 async def register_user(user: User):
     """
-    Registers a new user by adding their information to the Users table.
-    The table is created dynamically if it doesn't exist.
+    Registers a new user by adding their information to the Users collection.
     """
     try:
-        # Create the Users table if it doesn't exist
-        create_users_table_query = """
-        CREATE TABLE IF NOT EXISTS users (
-            user_id uuid PRIMARY KEY,
-            name text,
-            email text,
-            country text,
-            interestOne text,
-            interestTwo text,
-            interestThree text,
-            age text,
-            language text
-        )
-        """
-        session.execute(create_users_table_query)
-
-        # Generate a unique user_id
-        user_id = uuid.uuid4()
-
-        # Prepare the query for inserting user data
-        insert_user_query = SimpleStatement("""
-            INSERT INTO users (user_id, name, email, country, interestOne, interestTwo, interestThree, age, language)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """)
-
-        # Execute the insert query with user data
-        session.execute(insert_user_query, (
-            user_id, user.name, user.email, user.country, user.interestOne, user.interestTwo, user.interestThree, user.age, user.language
-        ))
-
-        # Return a success message with the generated user_id
-        return {"message": "User registered successfully", "user_id": {str(user_id)}}
-
+        # Access the users collection (will be created if it doesn't exist)
+        users_collection = db["users"]
+        
+        # Create user document
+        user_data = {
+            "user_id": str(uuid.uuid4()),
+            "name": user.name,
+            "email": user.email,
+            "country": user.country,
+            "interestOne": user.interestOne,
+            "interestTwo": user.interestTwo,
+            "interestThree": user.interestThree,
+            "age": user.age,
+            "language": user.language
+        }
+        
+        # Insert the user document
+        result = users_collection.insert_one(user_data)
+        
+        # Return success message with user_id
+        return {"message": "User registered successfully", "user_id": user_data["user_id"]}
+        
     except Exception as e:
         # Raise an HTTP exception in case of an error
         raise HTTPException(status_code=500, detail=f"Failed to register user: {e}")
-
-
-# Define a Pydantic model for request validation
-class Property(BaseModel):
-    geohash: str
-    landmarkName: str  # Instead of latitude and longitude, we take name (address)
-    country: str
-    city: str
-    responses: str
 
 @app.get("/get-properties/")
 async def get_properties(
@@ -103,52 +78,64 @@ async def get_properties(
 ):
     """
     Retrieves properties near the provided latitude and longitude based on geohash.
-    The geohash of the given coordinates is calculated, and properties with the same
-    geohash are fetched from the database.
     """
     try:
         # Calculate the geohash based on latitude and longitude
         geohash_code = geohash.encode(lat, long, precision=2)
         print(geohash_code)
-
-        # Query the Cassandra database for properties with matching geohash
-        select_query = """
-        SELECT * FROM properties WHERE geohash = %s
-        """
-        rows = session.execute(select_query, (f'{geohash_code}',))
-
+        
+        # Access the properties collection
+        properties_collection = db["properties"]
+        
+        # Query MongoDB for properties with matching geohash
+        cursor = properties_collection.find({"geohash": geohash_code})
+        
         classify_age = lambda age: "young" if age < 30 else "middleage" if age <= 60 else "old"
-
+        
         properties = []
-        for row in rows:
-            landmark_name = row.landmarkname.replace(" ", "")
-
+        for document in cursor:
+            landmark_name = document["landmarkName"].replace(" ", "")
+            
             print("user country is ", userCountry)
-
+            
             # Define the keys to extract from the responses JSON
-            keys_to_extract = [f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_small", f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_middle", f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_large"]
-
-            # Parse the JSON structure in row.responses
-            responses_json = json.loads(row.responses)
-            # Filter the desired keys from the JSON
-            filtered_responses = {key: responses_json.get(f'{key}') for key in keys_to_extract}
+            keys_to_extract = [
+                f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_small", 
+                f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_middle", 
+                f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{classify_age(int(userAge))}_large"
+            ]
+            
+            # Parse the responses
+            responses_data = document.get("responses", {})
+            if isinstance(responses_data, str):
+                responses_data = json.loads(responses_data)
+                
+            # Filter the desired keys from the responses
+            filtered_responses = {key: responses_data.get(key) for key in keys_to_extract}
             print("filtered all responses")
+            
             # Append the property with filtered responses
-            properties.append({
-                "geohash": row.geohash,
-                "latitude": row.latitude,
-                "longitude": row.longitude,
-                "landmarkName": row.landmarkname,
-                "city": row.city,
-                "country": row.country,
+            property_data = {
+                "geohash": document.get("geohash"),
+                "latitude": document.get("latitude"),
+                "longitude": document.get("longitude"),
+                "landmarkName": document.get("landmarkName"),
+                "city": document.get("city"),
+                "country": document.get("country"),
                 "responses": filtered_responses,
-            })
-
+            }
+            
+            # Remove ObjectId to make it JSON serializable
+            if "_id" in property_data:
+                property_data["_id"] = str(property_data["_id"])
+                
+            properties.append(property_data)
+            
             print("reached here")
         
         # Return the properties found
         return {"properties": properties}
-
+        
     except Exception as e:
         # Raise an HTTP exception in case of an error
         raise HTTPException(status_code=500, detail=str(e))
@@ -157,25 +144,95 @@ async def get_properties(
 async def login_user(name: str = Query(..., description="Name of the user"), email: str = Query(..., description="Email of the user")):
     """
     Authenticates a user by checking if their name and email exist in the database.
-    If found, returns the user_id associated with the user.
+    If found, returns the user information.
     """
     try:
-        # Prepare the query to find the user by name and email
-        select_query = SimpleStatement("""
-            SELECT user_id , name, interestone, interesttwo, interestthree, age, country, language FROM users WHERE name = %s AND email = %s ALLOW FILTERING
-        """)
-
-        # Execute the query with the provided name and email
-        rows = session.execute(select_query, (name, email))
-
-        # Fetch the first matching row (if any)
-        user_row = rows.one()
-
-        if user_row:
-            return user_row
+        # Access the users collection
+        users_collection = db["users"]
+        
+        # Find the user by name and email
+        user = users_collection.find_one({"name": name, "email": email})
+        
+        if user:
+            # Convert ObjectId to string to make it JSON serializable
+            user["_id"] = str(user["_id"])
+            return user
         else:
             raise HTTPException(status_code=404, detail="User not found")
-
+            
     except Exception as e:
         # Handle any exceptions and return an HTTP error
         raise HTTPException(status_code=500, detail=f"Login failed: {e}")
+    
+
+
+@app.get("/landmark-response")
+async def get_landmark_response(
+    landmark: str,
+    userCountry: str = "default",
+    interestOne: str = "",
+    interestTwo: str = "",
+    interestThree: str = ""
+):
+    interests = [interestOne, interestTwo, interestThree]
+    response = assemble_response(property_id=landmark, user_country=userCountry, interests=interests)
+    return {
+        "landmark": landmark,
+        "country": userCountry,
+        "response": response
+    }
+
+# Data migration function (optional)
+def migrate_data_from_cassandra():
+    """
+    Optional function to migrate existing data from Cassandra to MongoDB.
+    You would need to run this separately with both databases connected.
+    """
+    try:
+        from cassandra.cluster import Cluster
+        
+        # Connect to Cassandra
+        cassandra_cluster = Cluster(['127.0.0.1'])
+        cassandra_session = cassandra_cluster.connect('roamly_keyspace')
+        
+        # Migrate users
+        users_rows = cassandra_session.execute("SELECT * FROM users")
+        users_collection = db["users"]
+        
+        for user_row in users_rows:
+            user_doc = {
+                "user_id": str(user_row.user_id),
+                "name": user_row.name,
+                "email": user_row.email,
+                "country": user_row.country,
+                "interestOne": user_row.intereestone,
+                "interestTwo": user_row.interesttwo,
+                "interestThree": user_row.interestthree,
+                "age": user_row.age,
+                "language": user_row.language
+            }
+            users_collection.insert_one(user_doc)
+            
+        # Migrate properties
+        properties_rows = cassandra_session.execute("SELECT * FROM properties")
+        properties_collection = db["properties"]
+        
+        for property_row in properties_rows:
+            property_doc = {
+                "geohash": property_row.geohash,
+                "latitude": property_row.latitude,
+                "longitude": property_row.longitude,
+                "landmarkName": property_row.landmarkname,
+                "city": property_row.city,
+                "country": property_row.country,
+                "responses": json.loads(property_row.responses) if isinstance(property_row.responses, str) else property_row.responses
+            }
+            properties_collection.insert_one(property_doc)
+            
+        print("Data migration completed successfully")
+        
+    except Exception as e:
+        print(f"Migration failed: {e}")
+        
+# If you need to run the migration, uncomment the line below
+# migrate_data_from_cassandra()

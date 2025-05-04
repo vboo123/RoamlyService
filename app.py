@@ -6,6 +6,7 @@ import uuid
 import json
 from cassandra.cluster import Cluster
 from assembleResponse import assemble_response
+import traceback
 
 # Connect to Cassandra
 cluster = Cluster(['127.0.0.1'])
@@ -38,15 +39,27 @@ class User(BaseModel):
 @app.post("/register-user/")
 async def register_user(user: User):
     try:
-        user_id = str(uuid.uuid4())
+        user_id = uuid.uuid4()
         session.execute("""
             INSERT INTO users (user_id, name, email, country, interestOne, interestTwo, interestThree, age, language)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (user_id, user.name, user.email, user.country, user.interestOne, user.interestTwo, user.interestThree, user.age, user.language))
+        """, (
+            user_id,
+            user.name,
+            user.email,
+            user.country,
+            user.interestOne,
+            user.interestTwo,
+            user.interestThree,
+            user.age,
+            user.language
+        ))
 
         return {"message": "User registered successfully", "user_id": user_id}
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to register user: {e}")
+
 
 @app.get("/get-properties/")
 async def get_properties(
@@ -60,8 +73,7 @@ async def get_properties(
     userLanguage: str = Query(..., description="language of user")
 ):
     try:
-        # geohash_code = geohash.encode(lat, long, precision=2)
-        geohash_code = "9q"
+        geohash_code = geohash.encode(lat, long, precision=2)
         print(geohash_code)
 
         rows = session.execute("SELECT * FROM properties WHERE geohash = %s", (geohash_code,))
@@ -120,6 +132,26 @@ async def login_user(name: str = Query(..., description="Name of the user"), ema
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Login failed: {e}")
 
+# @app.get("/landmark-response")
+# async def get_landmark_response(
+#     landmark: str,
+#     userCountry: str = "default",
+#     interestOne: str = "",
+#     interestTwo: str = "",
+#     interestThree: str = ""
+# ):
+#     interests = [interestOne, interestTwo, interestThree]
+#     response = assemble_response(property_id=landmark, user_country=userCountry, interests=interests)
+#     return {
+#         "landmark": landmark,
+#         "country": userCountry,
+#         "response": response
+#     }
+from fastapi import HTTPException
+import json
+import hashlib
+from cassandra.query import dict_factory
+
 @app.get("/landmark-response")
 async def get_landmark_response(
     landmark: str,
@@ -128,10 +160,30 @@ async def get_landmark_response(
     interestTwo: str = "",
     interestThree: str = ""
 ):
-    interests = [interestOne, interestTwo, interestThree]
-    response = assemble_response(property_id=landmark, user_country=userCountry, interests=interests)
-    return {
-        "landmark": landmark,
-        "country": userCountry,
-        "response": response
-    }
+    interests = sorted([interestOne, interestTwo, interestThree])
+    key_string = f"{landmark}|{interests}|English|young|medium|{userCountry}"
+    response_key = hashlib.md5(key_string.encode()).hexdigest()
+
+    # Fetch responses JSON from Cassandra
+    session.row_factory = dict_factory
+    query = "SELECT responses FROM properties WHERE landmarkName = %s ALLOW FILTERING"
+    result = session.execute(query, (landmark,))
+    row = result.one()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Landmark not found")
+
+    try:
+        response_data = json.loads(row["responses"])
+        if response_key not in response_data:
+            raise HTTPException(status_code=404, detail="Matching response not found")
+
+        return {
+            "landmark": landmark,
+            "country": userCountry,
+            "text": response_data[response_key]["text"],
+            "audio_url": response_data[response_key]["audio_url"]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error parsing response data: {str(e)}")

@@ -6,6 +6,7 @@ import uuid
 import json
 from cassandra.cluster import Cluster
 from assembleResponse import assemble_response
+import traceback
 
 # Connect to Cassandra
 cluster = Cluster(['127.0.0.1'])
@@ -38,15 +39,27 @@ class User(BaseModel):
 @app.post("/register-user/")
 async def register_user(user: User):
     try:
-        user_id = str(uuid.uuid4())
+        user_id = uuid.uuid4()
         session.execute("""
             INSERT INTO users (user_id, name, email, country, interestOne, interestTwo, interestThree, age, language)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (user_id, user.name, user.email, user.country, user.interestOne, user.interestTwo, user.interestThree, user.age, user.language))
+        """, (
+            user_id,
+            user.name,
+            user.email,
+            user.country,
+            user.interestOne,
+            user.interestTwo,
+            user.interestThree,
+            user.age,
+            user.language
+        ))
 
         return {"message": "User registered successfully", "user_id": user_id}
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to register user: {e}")
+
 
 @app.get("/get-properties/")
 async def get_properties(
@@ -153,7 +166,7 @@ async def get_landmark_response(
 
     # Fetch responses JSON from Cassandra
     session.row_factory = dict_factory
-    query = "SELECT responses FROM properties WHERE landmarkName = %s"
+    query = "SELECT responses FROM properties WHERE landmarkName = %s ALLOW FILTERING"
     result = session.execute(query, (landmark,))
     row = result.one()
 

@@ -152,6 +152,7 @@ import json
 import hashlib
 from cassandra.query import dict_factory
 
+
 @app.get("/landmark-response")
 async def get_landmark_response(
     landmark: str,
@@ -160,21 +161,36 @@ async def get_landmark_response(
     interestTwo: str = "",
     interestThree: str = ""
 ):
+    # Normalize country to match what's used in batch generation
+    country_map = {
+        "UnitedStatesofAmerica": "United States",
+        "USA": "United States",
+        "US": "United States"
+        # Add more mappings if needed
+    }
+    userCountry = country_map.get(userCountry, userCountry)
+
     interests = sorted([interestOne, interestTwo, interestThree])
-    key_string = f"{landmark}|{interests}|English|young|medium|{userCountry}"
+    interest_str = ",".join(interests)
+    key_string = f"{landmark}|{interest_str}|English|young|medium|{userCountry}"
     response_key = hashlib.md5(key_string.encode()).hexdigest()
 
-    # Fetch responses JSON from Cassandra
+    print("Key string used to generate hash:", key_string)
+    print("Computed response_key:", response_key)
+
+    # Fetch from Cassandra
     session.row_factory = dict_factory
     query = "SELECT responses FROM properties WHERE landmarkName = %s ALLOW FILTERING"
     result = session.execute(query, (landmark,))
     row = result.one()
 
-    if not row:
-        raise HTTPException(status_code=404, detail="Landmark not found")
+    if not row or not row.get("responses"):
+        raise HTTPException(status_code=404, detail="No responses found for this landmark")
 
     try:
         response_data = json.loads(row["responses"])
+        print("All response keys:", list(response_data.keys()))
+
         if response_key not in response_data:
             raise HTTPException(status_code=404, detail="Matching response not found")
 

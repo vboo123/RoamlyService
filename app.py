@@ -2,8 +2,6 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from geolib import geohash
-from cassandra.cluster import Cluster
-from cassandra.query import dict_factory
 from boto3.dynamodb.conditions import Attr
 import boto3
 import uuid
@@ -22,14 +20,10 @@ dynamodb = boto3.resource(
     'dynamodb',
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    region_name="us-east-1"  # Hardcoded for now
+    region_name="us-east-1"
 )
 landmarks_table = dynamodb.Table("Landmarks")
-
-# === Setup Cassandra for user info ===
-cluster = Cluster(['127.0.0.1'])
-session = cluster.connect()
-session.set_keyspace('roamly_keyspace')
+users_table = dynamodb.Table("Users")
 
 # === FastAPI app ===
 app = FastAPI()
@@ -42,8 +36,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-import decimal
-
 def convert_dynamodb_types(obj):
     if isinstance(obj, list):
         return [convert_dynamodb_types(i) for i in obj]
@@ -52,7 +44,6 @@ def convert_dynamodb_types(obj):
     elif isinstance(obj, decimal.Decimal):
         return float(obj) if "." in str(obj) else int(obj)
     return obj
-
 
 class User(BaseModel):
     name: str
@@ -67,16 +58,19 @@ class User(BaseModel):
 @app.post("/register-user/")
 async def register_user(user: User):
     try:
-        user_id = uuid.uuid4()
-        session.execute("""
-            INSERT INTO users (user_id, name, email, country, interestOne, interestTwo, interestThree, age, language)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (
-            user_id, user.name, user.email, user.country,
-            user.interestOne, user.interestTwo, user.interestThree,
-            user.age, user.language
-        ))
-        return {"message": "User registered successfully", "user_id": str(user_id)}
+        user_id = str(uuid.uuid4())
+        users_table.put_item(Item={
+            "email": user.email,
+            "name": user.name,
+            "user_id": user_id,
+            "country": user.country,
+            "interestOne": user.interestOne,
+            "interestTwo": user.interestTwo,
+            "interestThree": user.interestThree,
+            "age": user.age,
+            "language": user.language
+        })
+        return {"message": "User registered successfully", "user_id": user_id}
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to register user: {e}")
@@ -84,21 +78,11 @@ async def register_user(user: User):
 @app.get("/login/")
 async def login_user(name: str = Query(...), email: str = Query(...)):
     try:
-        row = session.execute("SELECT * FROM users WHERE name = %s AND email = %s ALLOW FILTERING", (name, email)).one()
-        if row:
-            return {
-                "user_id": row.user_id,
-                "name": row.name,
-                "email": row.email,
-                "country": row.country,
-                "interestOne": row.interestone,
-                "interestTwo": row.interesttwo,
-                "interestThree": row.interestthree,
-                "age": row.age,
-                "language": row.language
-            }
-        else:
+        result = users_table.get_item(Key={"email": email})
+        user = result.get("Item")
+        if not user or user.get("name") != name:
             raise HTTPException(status_code=404, detail="User not found")
+        return convert_dynamodb_types(user)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Login failed: {e}")
 
@@ -178,7 +162,7 @@ async def get_landmark_response(
     try:
         result = landmarks_table.get_item(Key={
             "landmark_id": landmark.replace(" ", "_"),
-            "geohash": geohash 
+            "geohash": geohash
         })
         item = result.get("Item")
         if not item:

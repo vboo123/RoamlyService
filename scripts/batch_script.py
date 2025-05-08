@@ -13,6 +13,15 @@ from google.cloud import texttospeech
 import boto3
 
 load_dotenv()
+# === DynamoDB Setup ===
+dynamodb = boto3.resource(
+    'dynamodb',
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name="us-east-1"
+)
+dynamo_table = dynamodb.Table("Landmarks")
+
 
 # === Google TTS Client ===
 TTS_CLIENT = texttospeech.TextToSpeechClient()
@@ -94,29 +103,23 @@ def create_or_update_property(landmark, json_string):
 
     geohash_code = geohash.encode(lat, lon, precision=2)
 
-    session.execute("""
-        CREATE TABLE IF NOT EXISTS properties (
-            geoHash TEXT,
-            latitude TEXT,
-            longitude TEXT,
-            landmarkName TEXT,
-            country TEXT,
-            city TEXT,
-            responses TEXT,
-            PRIMARY KEY ((geoHash), landmarkName)
-        );
-    """)
+    # Parse responses from JSON string
+    responses_dict = json.loads(json_string)
 
-    session.execute("""
-        INSERT INTO properties (
-            geoHash, latitude, longitude, landmarkName, country, city, responses
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (
-        geohash_code, str(lat), str(lon), landmark,
-        country, city, json_string
-    ))
+    # Insert into DynamoDB
+    dynamo_table.put_item(Item={
+        "landmark_id": landmark.replace(" ", "_"),
+        "city": city,
+        "country": country,
+        "coordinates": {
+            "lat": str(lat),
+            "lng": str(lon)
+        },
+        "geohash": geohash_code,
+        "responses": responses_dict
+    })
 
-    print(f"✅ Inserted {landmark} @ {city}, {country}")
+    print(f"✅ Inserted into DynamoDB: {landmark} @ {city}, {country}")
 
 def upload_to_s3(local_path: str, s3_key: str):
     s3_client.upload_file(

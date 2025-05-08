@@ -7,6 +7,13 @@ import json
 from cassandra.cluster import Cluster
 from assembleResponse import assemble_response
 import traceback
+from fastapi import HTTPException
+import json
+import hashlib
+from cassandra.query import dict_factory
+from fastapi import HTTPException
+import boto3
+import hashlib
 
 # Connect to Cassandra
 cluster = Cluster(['127.0.0.1'])
@@ -65,50 +72,53 @@ async def register_user(user: User):
 async def get_properties(
     lat: float = Query(..., description="Latitude of the location"),
     long: float = Query(..., description="Longitude of the location"),
-    interestOne: str = Query(..., description="interestOne of user"),
-    interestTwo: str = Query(..., description="interestTwo of user"),
-    interestThree: str = Query(..., description="interestThree of user"),
-    userAge: str = Query(..., description="age of user"),
-    userCountry: str = Query(..., description="country of user"),
-    userLanguage: str = Query(..., description="language of user")
+    interestOne: str = Query(...),
+    interestTwo: str = Query(...),
+    interestThree: str = Query(...),
+    userAge: str = Query(...),
+    userCountry: str = Query(...),
+    userLanguage: str = Query(...)
 ):
     try:
         geohash_code = geohash.encode(lat, long, precision=2)
-        print(geohash_code)
+        print("Query geohash:", geohash_code)
 
-        rows = session.execute("SELECT * FROM properties WHERE geohash = %s", (geohash_code,))
+        # Fetch all items with matching geohash (scan + filter)
+        scan_results = landmarks_table.scan(
+            FilterExpression=Attr("geohash").eq(geohash_code)
+        )
 
         classify_age = lambda age: "young" if age < 30 else "middleage" if age <= 60 else "old"
         age_group = classify_age(int(userAge))
 
         properties = []
-        for row in rows:
-            landmark_name = row.landmarkname.replace(" ", "")
+        for item in scan_results.get("Items", []):
+            landmark_name = item["landmark_id"]
 
+            # Reconstruct the 3 hashed response keys
             keys_to_extract = [
                 f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{age_group}_small",
                 f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{age_group}_middle",
                 f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{age_group}_large"
             ]
 
-            responses_data = json.loads(row.responses) if isinstance(row.responses, str) else row.responses
-            filtered_responses = {key: responses_data.get(key) for key in keys_to_extract}
+            responses_data = item.get("responses", {})
+            filtered_responses = {key: responses_data.get(key) for key in keys_to_extract if key in responses_data}
 
-            property_data = {
-                "geohash": row.geohash,
-                "latitude": row.latitude,
-                "longitude": row.longitude,
-                "landmarkName": row.landmarkname,
-                "city": row.city,
-                "country": row.country,
+            properties.append({
+                "geohash": item.get("geohash"),
+                "latitude": item["coordinates"]["lat"],
+                "longitude": item["coordinates"]["lng"],
+                "landmarkName": landmark_name,
+                "city": item.get("city"),
+                "country": item.get("country"),
                 "responses": filtered_responses,
-            }
-
-            properties.append(property_data)
+            })
 
         return {"properties": properties}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"DynamoDB query failed: {str(e)}")
 
 @app.get("/login/")
 async def login_user(name: str = Query(..., description="Name of the user"), email: str = Query(..., description="Email of the user")):
@@ -132,26 +142,15 @@ async def login_user(name: str = Query(..., description="Name of the user"), ema
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Login failed: {e}")
 
-# @app.get("/landmark-response")
-# async def get_landmark_response(
-#     landmark: str,
-#     userCountry: str = "default",
-#     interestOne: str = "",
-#     interestTwo: str = "",
-#     interestThree: str = ""
-# ):
-#     interests = [interestOne, interestTwo, interestThree]
-#     response = assemble_response(property_id=landmark, user_country=userCountry, interests=interests)
-#     return {
-#         "landmark": landmark,
-#         "country": userCountry,
-#         "response": response
-#     }
-from fastapi import HTTPException
-import json
-import hashlib
-from cassandra.query import dict_factory
 
+# Setup DynamoDB client
+dynamodb = boto3.resource(
+    'dynamodb',
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name=os.getenv("AWS_REGION")
+)
+landmarks_table = dynamodb.Table("Landmarks")
 
 @app.get("/landmark-response")
 async def get_landmark_response(
@@ -161,15 +160,15 @@ async def get_landmark_response(
     interestTwo: str = "",
     interestThree: str = ""
 ):
-    # Normalize country to match what's used in batch generation
+    # Normalize country
     country_map = {
         "UnitedStatesofAmerica": "United States",
         "USA": "United States",
         "US": "United States"
-        # Add more mappings if needed
     }
     userCountry = country_map.get(userCountry, userCountry)
 
+    # Hash generation logic (same as before)
     interests = sorted([interestOne, interestTwo, interestThree])
     interest_str = ",".join(interests)
     key_string = f"{landmark}|{interest_str}|English|young|medium|{userCountry}"
@@ -178,28 +177,22 @@ async def get_landmark_response(
     print("Key string used to generate hash:", key_string)
     print("Computed response_key:", response_key)
 
-    # Fetch from Cassandra
-    session.row_factory = dict_factory
-    query = "SELECT responses FROM properties WHERE landmarkName = %s ALLOW FILTERING"
-    result = session.execute(query, (landmark,))
-    row = result.one()
-
-    if not row or not row.get("responses"):
-        raise HTTPException(status_code=404, detail="No responses found for this landmark")
-
+    # Fetch from DynamoDB
     try:
-        response_data = json.loads(row["responses"])
-        print("All response keys:", list(response_data.keys()))
+        result = landmarks_table.get_item(Key={"landmark_id": landmark.replace(" ", "_")})
+        item = result.get("Item")
+        if not item:
+            raise HTTPException(status_code=404, detail="Landmark not found")
 
-        if response_key not in response_data:
-            raise HTTPException(status_code=404, detail="Matching response not found")
+        responses = item.get("responses", {})
+        if response_key not in responses:
+            raise HTTPException(status_code=404, detail="No matching response found")
 
         return {
             "landmark": landmark,
             "country": userCountry,
-            "text": response_data[response_key]["text"],
-            "audio_url": response_data[response_key]["audio_url"]
+            "text": responses[response_key]["text"],
+            "audio_url": responses[response_key]["audio_url"]
         }
-
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error parsing response data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching from DynamoDB: {str(e)}")

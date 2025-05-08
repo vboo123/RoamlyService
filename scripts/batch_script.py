@@ -56,7 +56,9 @@ def get_combos():
     )
 
 def generate_key(landmark, interest_combo, language, age, format, country):
-    combo_string = f"{landmark}|{sorted(interest_combo)}|{language}|{age}|{format}|{country}"
+    interest_str = ",".join(sorted(interest_combo))
+    combo_string = f"{landmark}|{interest_str}|{language}|{age}|{format}|{country}"
+    print(f"🧩 Key String: {combo_string}")
     return hashlib.md5(combo_string.encode()).hexdigest()
 
 def generate_prompt(landmark, interest_combo, language, age, format, country):

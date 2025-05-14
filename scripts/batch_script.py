@@ -58,11 +58,22 @@ with open("./landmarks.json", "r") as f:
    landmarks = json.load(f)
 
 
-interests = ["Technology", "Travel", "Fitness"]
-languages = ["English"]
-ages = ["young"]
+interests = [
+  'Nature',
+  'History',
+  'Food',
+  'Museums',
+  'Adventure',
+  'Beaches',
+  'Architecture',
+  'Fitness',
+  'Travel',
+  'Technology',
+]
+languages = ["English", "Hindi"]
+ages = ["young", "middleage", "old"]
 formats = ["medium"]
-countries = ["United States"]
+countries = ["United States, India, Mexico"]
 
 
 def get_combos():
@@ -114,7 +125,7 @@ def create_or_update_property(landmark, json_string):
    location = geolocator.reverse((lat, lon), exactly_one=True)
    city = location.raw['address'].get('city') or location.raw['address'].get('town') or location.raw['address'].get('village') or "Unknown"
    country = location.raw['address'].get('country', "Unknown")
-   geohash_code = geohash.encode(lat, lon, precision=2)
+   geohash_code = geohash.encode(lat, lon, precision=6)
 
 
    responses_dict = json.loads(json_string)

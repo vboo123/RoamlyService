@@ -1,30 +1,46 @@
-from cassandra.cluster import Cluster
+# === assemble_response.py ===
+import boto3
+import json
+import os
+from dotenv import load_dotenv
 
-# Connect to Cassandra
-cluster = Cluster(['127.0.0.1'])
-session = cluster.connect()
-session.set_keyspace('roamly_keyspace')
+# Load environment
+load_dotenv()
 
-def assemble_response(property_id: str, user_country: str = "default", interests: list[str] = None) -> str:
-    semantic_keys = ["origin.general", "height.general", "media.references"]
+# Setup DynamoDB
+dynamodb = boto3.resource(
+    'dynamodb',
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name=os.getenv("AWS_REGION")
+)
+semantic_table = dynamodb.Table("semantic_responses")
+
+# Load semantic key config
+with open("semantic_config.json", "r") as f:
+    semantic_config = json.load(f)
+
+def get_relevant_keys(landmark_type):
+    return semantic_config.get(landmark_type, ["origin.general", "media.references"])
+
+def assemble_response(landmark_id: str, landmark_type: str, user_country: str = "default", interests: list = None) -> str:
+    semantic_keys = get_relevant_keys(landmark_type)
     facts = {}
 
     for key in semantic_keys:
-        rows = session.execute("""
-            SELECT response, user_country FROM semantic_responses
-            WHERE property_id = %s AND semantic_key = %s ALLOW FILTERING
-        """, (property_id, key))
+        try:
+            result = semantic_table.get_item(Key={
+                "landmark_id": landmark_id,
+                "semantic_key": key
+            })
+            item = result.get("Item")
+            if item and item.get("user_country") == user_country:
+                facts[key] = item["response"]
+            elif item and item.get("user_country") == "default":
+                facts[key] = item["response"]
+        except Exception as e:
+            print(f"Error fetching key {key}: {e}")
 
-        selected = ""
-        for row in rows:
-            if row.user_country == user_country:
-                selected = row.response.strip()
-                break
-            elif row.user_country == "default" and not selected:
-                selected = row.response.strip()
-        facts[key] = selected
-
-    # Optionally tweak response using interests
     interest_phrase = ""
     if interests:
         if "Movies" in interests or "TV" in interests:
@@ -33,17 +49,10 @@ def assemble_response(property_id: str, user_country: str = "default", interests
             interest_phrase = "It’s also a favorite for photographers. "
         elif "History" in interests:
             interest_phrase = "Its long history makes it a must-see. "
-        # Add more personalized tweaks as desired
 
-    template = (
-        "Hey there! Welcome to the {landmark}. {origin} Fun fact: {height} "
-        "{interest_phrase}Also, {media} Hope you're enjoying your trip!"
-    )
+    assembled = f"Hey there! Welcome to the {landmark_id}. " + interest_phrase
+    for key in semantic_keys:
+        if facts.get(key):
+            assembled += facts[key] + " "
 
-    return template.format(
-        landmark=property_id,
-        origin=facts.get("origin.general", ""),
-        height=facts.get("height.general", ""),
-        media=facts.get("media.references", ""),
-        interest_phrase=interest_phrase
-    )
+    return assembled.strip()

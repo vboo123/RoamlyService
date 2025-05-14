@@ -93,7 +93,7 @@ async def get_properties(
     userAge: str, userCountry: str, userLanguage: str
 ):
     try:
-        geohash_code = geohash.encode(lat, long, precision=2)
+        geohash_code = geohash.encode(lat, long, precision=6)
         print("Query geohash:", geohash_code)
 
         scan_results = landmarks_table.scan(

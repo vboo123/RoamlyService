@@ -1,0 +1,54 @@
+{
+    "monument": [
+      "origin.general",
+      "origin.purpose",
+      "architecture.style",
+      "height.general",
+      "media.references",
+      "experience.vibe",
+      "ownership.current",
+      "access.cost",
+      "access.best_time"
+    ],
+    "natural": [
+      "origin.general",
+      "history.events",
+      "experience.vibe",
+      "photospots.best",
+      "access.best_time",
+      "tips.secrets",
+      "sustainability.efforts",
+      "access.transport"
+    ],
+    "museum": [
+      "origin.general",
+      "history.timeline",
+      "experience.vibe",
+      "tips.secrets",
+      "events.upcoming",
+      "access.cost",
+      "access.hours",
+      "ownership.current"
+    ],
+    "religious": [
+      "origin.general",
+      "origin.name",
+      "culture.symbolism",
+      "myths.legends",
+      "architecture.style",
+      "experience.vibe",
+      "access.crowds",
+      "access.hours"
+    ],
+    "urban": [
+      "origin.general",
+      "height.general",
+      "experience.vibe",
+      "access.transport",
+      "media.references",
+      "photospots.best",
+      "food.nearby",
+      "tips.secrets"
+    ]
+  }
+  

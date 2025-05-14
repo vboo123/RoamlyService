@@ -1,139 +1,160 @@
-import asyncio
-from openai import OpenAI
+# === updated_batch_script.py ===
 import os
-from dotenv import load_dotenv
-from itertools import combinations, product
-from cassandra.cluster import Cluster
 import json
-from geolib import geohash
+import hashlib
+import asyncio
+from itertools import combinations
+from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
-from gpt4all import GPT4All
-import sys
+from geolib import geohash
+import boto3
+import openai
+from google.cloud import texttospeech
 
-# Load environment variables
+# === Load .env ===
 load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Connect to Cassandra
-cluster = Cluster(['127.0.0.1'])
-session = cluster.connect()
-session.set_keyspace('roamly_keyspace')
+# === AWS Setup ===
+dynamodb = boto3.resource(
+    'dynamodb',
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name='us-east-1'
+)
+semantic_table = dynamodb.Table("semantic_responses")
+landmark_table = dynamodb.Table("Landmarks")
 
-# Data inputs
+s3_client = boto3.client(
+    "s3",
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name=os.getenv("AWS_REGION")
+)
+S3_BUCKET = os.getenv("S3_BUCKET_NAME")
+AUDIO_URL_BASE = os.getenv("AUDIO_URL_BASE")
+AUDIO_DIR = "audio"
+os.makedirs(AUDIO_DIR, exist_ok=True)
+
+TTS_CLIENT = texttospeech.TextToSpeechClient()
+
+# === Load semantic config ===
+with open("semantic_config.json", "r") as f:
+    semantic_config = json.load(f)
+
+def get_relevant_keys(landmark_type):
+    return semantic_config.get(landmark_type, ["origin.general", "media.references"])
+
+# === Data Inputs ===
+with open("landmarks.json", "r") as f:
+    landmark_objs = json.load(f)
+
+interests = [
+    'Nature', 'History', 'Food', 'Museums',
+    'Adventure', 'Beaches', 'Architecture', 'Fitness',
+    'Travel', 'Technology'
+]
 languages = ["English"]
-interests = ["Technology"]
-ages = ["young"]
-countries = ["United States"]
-landmarks = ["Hollywood Sign"]
+countries = ["United States", "India", "Mexico"]
 
-interest_combinations = combinations(interests, 3)
-followups_by_landmark = {
-    "Hollywood Sign": {
-        "height.general": "how tall is it?",
-        "origin.general": "when was it built?",
-        "media.references": "was it featured in any movies?"
-    }
-}
+def get_coordinates(place):
+    geolocator = Nominatim(user_agent="roamly_app")
+    location = geolocator.geocode(place)
+    return (location.latitude, location.longitude) if location else (None, None)
 
-def insert_semantic_responses(property_id):
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS semantic_responses (
-        property_id TEXT,
-        semantic_key TEXT,
-        query TEXT,
-        response TEXT,
-        user_country TEXT,
-        PRIMARY KEY ((property_id, semantic_key), user_country)
-    );
-    """
-    session.execute(create_table_query)
+def upload_to_s3(local_path: str, s3_key: str):
+    s3_client.upload_file(
+        local_path,
+        S3_BUCKET,
+        s3_key,
+        ExtraArgs={"ContentType": "audio/mpeg"}
+    )
 
-    if property_id not in followups_by_landmark:
-        print(f"No follow-up mappings found for {property_id}")
-        return
+def generate_mp3_if_missing(text: str) -> str:
+    text_hash = hashlib.md5(text.encode()).hexdigest()
+    filename = f"{text_hash}.mp3"
+    local_path = os.path.join(AUDIO_DIR, filename)
+    s3_key = f"audio/{filename}"
+    audio_url = AUDIO_URL_BASE + filename
 
-    model = GPT4All(model_name='Meta-Llama-3-8B-Instruct.Q4_0.gguf', allow_download=False)
+    if not os.path.exists(local_path):
+        synthesis_input = texttospeech.SynthesisInput(text=text)
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="en-US",
+            name="en-US-Wavenet-D",
+            ssml_gender=texttospeech.SsmlVoiceGender.MALE
+        )
+        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+        response = TTS_CLIENT.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+        with open(local_path, "wb") as out:
+            out.write(response.audio_content)
 
-    for semantic_key, question in followups_by_landmark[property_id].items():
-        for country in ["default", "India"]:
-            personalization = f" They are visiting from {country}." if country != "default" else ""
-            prompt = f"""You are a local tour guide. A tourist asks: '{question}'\nThey are visiting the {property_id}.{personalization} Respond warmly, like a narrator.\nDo not include examples, instructions, or follow-up questions."""
-            response = ""
-            for token in model.generate(prompt, streaming=True):
-                response += token
-            session.execute("""
-                INSERT INTO semantic_responses (property_id, semantic_key, query, response, user_country)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (property_id, semantic_key, question, response.strip(), country))
-            print(f"Inserted follow-up: {semantic_key} for {property_id} ({country})")
+    try:
+        upload_to_s3(local_path, s3_key)
+    except Exception as e:
+        print(f"⚠️ Failed to upload audio: {e}")
 
-def get_coordinates(location):
-    geolocator = Nominatim(user_agent="myApp")
-    location_obj = geolocator.geocode(location)
-    return (location_obj.latitude, location_obj.longitude) if location_obj else (None, None)
+    return audio_url
 
-def insert_property(landmark):
-    lat, lon = get_coordinates(f"{landmark}, Los Angeles")
+def insert_landmark_metadata(landmark_obj):
+    name = landmark_obj["name"]
+    landmark_type = landmark_obj.get("type", "unknown")
+    lat, lon = get_coordinates(name)
     if not lat or not lon:
-        print(f"Failed to get coordinates for {landmark}")
+        print(f"❌ Skipping {name} due to missing coordinates")
         return
 
-    geohash_code = geohash.encode(lat, lon, precision=2)
-    session.execute("""
-        CREATE TABLE IF NOT EXISTS properties (
-            geoHash TEXT,
-            latitude TEXT,
-            longitude TEXT,
-            landmarkName TEXT,
-            country TEXT,
-            city TEXT,
-            responses TEXT,
-            PRIMARY KEY ((geoHash), landmarkName)
-        );
-    """
-    )
+    geohash_code = geohash.encode(lat, lon, precision=6)
+    landmark_table.put_item(Item={
+        "landmark_id": name.replace(" ", "_"),
+        "name": name,
+        "type": landmark_type,
+        "coordinates": {"lat": str(lat), "lng": str(lon)},
+        "geohash": geohash_code
+    })
+    print(f"✅ Inserted landmark metadata for {name}")
 
-    session.execute("""
-        INSERT INTO properties (geoHash, latitude, longitude, landmarkName, country, city, responses)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (geohash_code, str(lat), str(lon), landmark, "United States of America", "Los Angeles", "{}"))
-    print(f"Inserted landmark entry for {landmark}")
+def insert_semantic_response(landmark, semantic_key, question, response, country):
+    audio_url = generate_mp3_if_missing(response)
+    item = {
+        "landmark_id": landmark.replace(" ", "_"),
+        "semantic_key": semantic_key,
+        "user_country": country,
+        "query": question,
+        "response": response,
+        "audio_url": audio_url
+    }
+    semantic_table.put_item(Item=item)
+    print(f"✅ Inserted semantic key: {semantic_key} ({country})")
 
-def assemble_response(property_id, user_country="default"):
-    semantic_keys = ["origin.general", "height.general", "media.references"]
-    facts = {}
+async def generate_and_store_semantics(landmark, landmark_type):
+    semantic_keys = get_relevant_keys(landmark_type)
     for key in semantic_keys:
-        rows = session.execute("""
-            SELECT response, user_country FROM semantic_responses
-            WHERE property_id = %s AND semantic_key = %s ALLOW FILTERING
-        """, (property_id, key))
-        selected = ""
-        for row in rows:
-            if row.user_country == user_country:
-                selected = row.response.strip()
-                break
-            elif row.user_country == "default" and not selected:
-                selected = row.response.strip()
-        facts[key] = selected
-
-    template = (
-        "Hey there! Welcome to the {landmark}. {origin} Fun fact: {height} "
-        "Also, {media} Hope you're enjoying your trip!"
-    )
-
-    return template.format(
-        landmark=property_id,
-        origin=facts.get("origin.general", ""),
-        height=facts.get("height.general", ""),
-        media=facts.get("media.references", "")
-    )
+        for country in countries + ["default"]:
+            prompt = (
+                f"You are a local tour guide. A tourist asks about '{key}'.\n"
+                f"They are visiting the {landmark} from {country}.\n"
+                f"Respond warmly, like a narrator."
+            )
+            try:
+                completion = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a friendly and knowledgeable travel guide."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                response = completion['choices'][0]['message']['content'].strip()
+                insert_semantic_response(landmark, key, prompt, response, country)
+            except Exception as e:
+                print(f"❌ Failed to generate OpenAI response for {key}: {e}")
 
 async def main():
-    for landmark in landmarks:
-        insert_property(landmark)
-        insert_semantic_responses(landmark)
-        for country in ["default", "India"]:
-            response = assemble_response(landmark, user_country=country)
-            print(f"\nAssembled Response for {country}:\n", response)
+    for landmark_obj in landmark_objs:
+        insert_landmark_metadata(landmark_obj)
+        await generate_and_store_semantics(landmark_obj["name"], landmark_obj["type"])
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -11,6 +11,7 @@ import os
 import traceback
 from dotenv import load_dotenv
 import decimal
+from scripts.assembleResponse import assemble_response
 
 # === Load environment variables ===
 load_dotenv()
@@ -135,50 +136,42 @@ async def get_properties(
         print("🔥 ERROR in /get-properties:", e)
         raise HTTPException(status_code=500, detail=f"DynamoDB query failed: {str(e)}")
 
-@app.get("/landmark-response")
+@app.get("/landmark-response/")
 async def get_landmark_response(
     landmark: str,
-    geohash: str,
     userCountry: str = "default",
     interestOne: str = "",
     interestTwo: str = "",
     interestThree: str = ""
 ):
-    country_map = {
-        "UnitedStatesofAmerica": "United States",
-        "USA": "United States",
-        "US": "United States"
-    }
-    userCountry = country_map.get(userCountry, userCountry)
-
-    interest_combo = sorted([interestOne, interestTwo, interestThree])
-    interest_str = ",".join(interest_combo)
-    normalized_landmark = landmark.replace("_", " ")
-    key_string = f"{normalized_landmark}|{interest_str}|English|young|medium|{userCountry}"
-    print("Key string used to generate hash:", key_string)
-    response_key = hashlib.md5(key_string.encode()).hexdigest()
-    print("Computed response_key:", response_key)
-
     try:
-        result = landmarks_table.get_item(Key={
-            "landmark_id": landmark.replace(" ", "_"),
-            "geohash": geohash
-        })
+        # Normalize
+        landmark_id = landmark.replace(" ", "_")
+        interests = [interestOne, interestTwo, interestThree]
+        country_map = {
+            "UnitedStatesofAmerica": "United States",
+            "USA": "United States",
+            "US": "United States"
+        }
+        userCountry = country_map.get(userCountry, userCountry)
+
+        # Get landmark type
+        result = landmarks_table.get_item(Key={"landmark_id": landmark_id})
         item = result.get("Item")
         if not item:
             raise HTTPException(status_code=404, detail="Landmark not found")
+        landmark_type = item.get("type", "monument")
 
-        responses = item.get("responses", {})
-        if response_key not in responses:
-            raise HTTPException(status_code=404, detail="No matching response found")
+        # Assemble response (uses query() under the hood)
+        text = assemble_response(landmark_id, landmark_type, userCountry, interests)
 
-        return convert_dynamodb_types({
+        return {
             "landmark": landmark,
             "country": userCountry,
-            "text": responses[response_key]["text"],
-            "audio_url": responses[response_key]["audio_url"]
-        })
+            "interests": interests,
+            "assembled_text": text
+        }
 
     except Exception as e:
         print("🔥 ERROR in /landmark-response:", e)
-        raise HTTPException(status_code=500, detail=f"Error fetching from DynamoDB: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to assemble response: {str(e)}")

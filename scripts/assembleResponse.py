@@ -1,0 +1,79 @@
+# === assemble_response.py ===
+import boto3
+import json
+import os
+from dotenv import load_dotenv
+from boto3.dynamodb.conditions import Key, Attr
+
+# Load environment
+load_dotenv()
+
+# Setup DynamoDB
+dynamodb = boto3.resource(
+    'dynamodb',
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name=os.getenv("AWS_REGION")
+)
+semantic_table = dynamodb.Table("semantic_responses")
+
+# Determine absolute path
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Load semantic key config
+with open(os.path.join(BASE_DIR, "semantic_config.json"), "r") as f:
+    semantic_config = json.load(f)
+
+# Load valid interests
+with open(os.path.join(BASE_DIR, "interests.json"), "r") as f:
+    interest_data = json.load(f)
+valid_interests = set(interest_data.get("interests", []))
+
+def get_relevant_keys(landmark_type):
+    return semantic_config.get(landmark_type, ["origin.general", "media.references"])
+
+def assemble_response(landmark_id: str, landmark_type: str, user_country: str = "default", interests: list = None) -> str:
+    semantic_keys = get_relevant_keys(landmark_type)
+    facts = {}
+
+    for key in semantic_keys:
+        try:
+            # Query for country-specific response first
+            response = semantic_table.query(
+                KeyConditionExpression=Key("landmark_id").eq(landmark_id) & Key("semantic_key").eq(key),
+                FilterExpression=Attr("user_country").eq(user_country)
+            )
+            items = response.get("Items", [])
+            if items:
+                facts[key] = items[0]["response"]
+                continue
+
+            # Fallback to default
+            response = semantic_table.query(
+                KeyConditionExpression=Key("landmark_id").eq(landmark_id) & Key("semantic_key").eq(key),
+                FilterExpression=Attr("user_country").eq("default")
+            )
+            fallback = response.get("Items", [])
+            if fallback:
+                facts[key] = fallback[0]["response"]
+        except Exception as e:
+            print(f"Error fetching key {key}: {e}")
+
+    interest_phrase = ""
+    if interests:
+        lower_interests = [i.lower() for i in interests]
+        if "movies" in lower_interests or "tv" in lower_interests:
+            interest_phrase = "If you're into films, you'll especially love this spot! "
+        elif "photography" in lower_interests:
+            interest_phrase = "It’s also a favorite for photographers. "
+        elif "history" in lower_interests:
+            interest_phrase = "Its long history makes it a must-see. "
+        elif any(i.lower() in lower_interests for i in valid_interests):
+            interest_phrase = f"This location is especially interesting if you're into {', '.join(interests)}. "
+
+    assembled = f"Hey there! Welcome to the {landmark_id.replace('_', ' ')}. " + interest_phrase
+    for key in semantic_keys:
+        if facts.get(key):
+            assembled += facts[key] + " "
+
+    return assembled.strip()

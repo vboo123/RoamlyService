@@ -33,15 +33,15 @@ def get_relevant_keys(landmark_type):
     return semantic_config.get(landmark_type, ["origin.general", "media.references"])
 
 def assemble_response(landmark_id: str, landmark_type: str, user_country: str = "default", interests: list = None) -> str:
-    semantic_keys = get_relevant_keys(landmark_type)
+    semantic_keys = get_relevant_keys(landmark_type.lower())
     facts = {}
 
     for key in semantic_keys:
         try:
             # Query for country-specific response first
+            semantic_country_key = f"{key}#{user_country}"
             response = semantic_table.query(
-                KeyConditionExpression=Key("landmark_id").eq(landmark_id) & Key("semantic_key").eq(key),
-                FilterExpression=Attr("user_country").eq(user_country)
+                KeyConditionExpression=Key("landmark_id").eq(landmark_id) & Key("semantic_country_key").eq(semantic_country_key)
             )
             items = response.get("Items", [])
             if items:
@@ -49,9 +49,9 @@ def assemble_response(landmark_id: str, landmark_type: str, user_country: str = 
                 continue
 
             # Fallback to default
+            fallback_key = f"{key}#default"
             response = semantic_table.query(
-                KeyConditionExpression=Key("landmark_id").eq(landmark_id) & Key("semantic_key").eq(key),
-                FilterExpression=Attr("user_country").eq("default")
+                KeyConditionExpression=Key("landmark_id").eq(landmark_id) & Key("semantic_country_key").eq(fallback_key)
             )
             fallback = response.get("Items", [])
             if fallback:

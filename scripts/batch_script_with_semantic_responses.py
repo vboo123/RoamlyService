@@ -118,12 +118,13 @@ def insert_semantic_response(landmark, semantic_key, question, response, country
     audio_url = generate_mp3_if_missing(response)
     item = {
         "landmark_id": landmark.replace(" ", "_"),
-        "semantic_key": semantic_key,
+        "semantic_country_key": f"{semantic_key}#{country}",  
+        "semantic_key": semantic_key,                         
         "user_country": country,
         "query": question,
         "response": response,
         "audio_url": audio_url
-    }
+}
     semantic_table.put_item(Item=item)
     print(f"✅ Inserted semantic key: {semantic_key} ({country})")
 

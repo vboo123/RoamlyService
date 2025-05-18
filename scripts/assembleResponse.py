@@ -59,19 +59,7 @@ def assemble_response(landmark_id: str, landmark_type: str, user_country: str = 
         except Exception as e:
             print(f"Error fetching key {key}: {e}")
 
-    interest_phrase = ""
-    if interests:
-        lower_interests = [i.lower() for i in interests]
-        if "movies" in lower_interests or "tv" in lower_interests:
-            interest_phrase = "If you're into films, you'll especially love this spot! "
-        elif "photography" in lower_interests:
-            interest_phrase = "It’s also a favorite for photographers. "
-        elif "history" in lower_interests:
-            interest_phrase = "Its long history makes it a must-see. "
-        elif any(i.lower() in lower_interests for i in valid_interests):
-            interest_phrase = f"This location is especially interesting if you're into {', '.join(interests)}. "
-
-    assembled = f"Hey there! Welcome to the {landmark_id.replace('_', ' ')}. " + interest_phrase
+    assembled = f"Hey there! Welcome to the {landmark_id.replace('_', ' ')}. "
     for key in semantic_keys:
         if facts.get(key):
             assembled += facts[key] + " "

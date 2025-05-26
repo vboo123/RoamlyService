@@ -3,7 +3,7 @@ import boto3
 import json
 import os
 from dotenv import load_dotenv
-from boto3.dynamodb.conditions import Key, Attr
+from boto3.dynamodb.conditions import Key
 
 # Load environment
 load_dotenv()
@@ -32,30 +32,35 @@ valid_interests = set(interest_data.get("interests", []))
 def get_relevant_keys(landmark_type):
     return semantic_config.get(landmark_type, ["origin.general", "media.references"])
 
-def assemble_response(landmark_id: str, landmark_type: str, user_country: str = "default", interests: list = None) -> str:
+def assemble_response(
+    landmark_id: str,
+    landmark_type: str,
+    user_country: str = "default",
+    interest: str = "default"
+) -> str:
     semantic_keys = get_relevant_keys(landmark_type.lower())
     facts = {}
 
     for key in semantic_keys:
         try:
-            # Query for country-specific response first
-            semantic_country_key = f"{key}#{user_country}"
+            full_key = f"{key}#{user_country}#{interest}"
             response = semantic_table.query(
-                KeyConditionExpression=Key("landmark_id").eq(landmark_id) & Key("semantic_country_key").eq(semantic_country_key)
+                KeyConditionExpression=Key("landmark_id").eq(landmark_id) & Key("semantic_country_key").eq(full_key)
             )
             items = response.get("Items", [])
             if items:
                 facts[key] = items[0]["response"]
                 continue
 
-            # Fallback to default
-            fallback_key = f"{key}#default"
-            response = semantic_table.query(
+            # Fallback to default interest and country
+            fallback_key = f"{key}#default#default"
+            fallback = semantic_table.query(
                 KeyConditionExpression=Key("landmark_id").eq(landmark_id) & Key("semantic_country_key").eq(fallback_key)
             )
-            fallback = response.get("Items", [])
-            if fallback:
-                facts[key] = fallback[0]["response"]
+            fallback_items = fallback.get("Items", [])
+            if fallback_items:
+                facts[key] = fallback_items[0]["response"]
+
         except Exception as e:
             print(f"Error fetching key {key}: {e}")
 

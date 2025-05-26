@@ -1,4 +1,3 @@
-# === updated_batch_script.py ===
 import os
 import json
 import hashlib
@@ -11,11 +10,10 @@ import boto3
 import openai
 from google.cloud import texttospeech
 
-# === Load .env ===
+# ---- Setup ----
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# === AWS Setup ===
 dynamodb = boto3.resource(
     'dynamodb',
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
@@ -56,6 +54,20 @@ interests = [
 ]
 languages = ["English"]
 countries = ["United States", "India", "Mexico"]
+
+# TODO: This will need to be updated depending on the prompts we define in semantic_config
+interest_mapping = {
+    "Nature": "Nature",
+    "History": "History",
+    "Food": "Food",
+    "Museums": "Museums",
+    "Adventure": "Exploration",
+    "Beaches": "Beaches",
+    "Architecture": "Architecture",
+    "Fitness": "Fitness",
+    "Travel": "Travel",
+    "Technology": "Technology"
+}
 
 def get_coordinates(place):
     geolocator = Nominatim(user_agent="roamly_app")
@@ -114,48 +126,67 @@ def insert_landmark_metadata(landmark_obj):
     })
     print(f"✅ Inserted landmark metadata for {name}")
 
-def insert_semantic_response(landmark, semantic_key, question, response, country):
+def insert_semantic_response(landmark, semantic_key, question, response, country, interest=None, mapped_category=None):
     audio_url = generate_mp3_if_missing(response)
     item = {
         "landmark_id": landmark.replace(" ", "_"),
-        "semantic_country_key": f"{semantic_key}#{country}",  
-        "semantic_key": semantic_key,                         
+        "semantic_country_key": f"{semantic_key}#{country}#{interest}",
+        "semantic_key": semantic_key,
         "user_country": country,
         "query": question,
         "response": response,
         "audio_url": audio_url
-}
+    }
+    if interest:
+        item["user_interest"] = interest
+        item["mapped_category"] = mapped_category
+
     semantic_table.put_item(Item=item)
     print(f"✅ Inserted semantic key: {semantic_key} ({country})")
 
-async def generate_and_store_semantics(landmark, landmark_type):
+async def generate_and_store_semantics(landmark_obj):
+    landmark = landmark_obj["name"]
+    landmark_type = landmark_obj["type"]
+    city = landmark_obj.get("city", "a city")  # fallback if city is missing
+
     semantic_keys = get_relevant_keys(landmark_type)
     for key in semantic_keys:
-        for country in countries + ["default"]:
-            prompt = (
-                f"You are a local tour guide. A tourist asks about '{key}'.\n"
-                f"They are visiting the {landmark} from {country}.\n"
-                f"Respond warmly, like a narrator."
-            )
-            try:
-                completion = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are a friendly and knowledgeable travel guide."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=500
+        for country in countries:
+            for interest in interests:
+                mapped_category = interest_mapping.get(interest, "curiosity")
+
+                template = semantic_config.get(landmark_type, {}).get(key)
+                if not template:
+                    print(f"⚠️ Skipping missing prompt for {landmark_type} → {key}")
+                    continue
+
+                prompt = template.format(
+                    city=city,
+                    country=country,
+                    userCountry=country,
+                    mappedCategory=mapped_category,
+                    landmark=landmark
                 )
-                response = completion['choices'][0]['message']['content'].strip()
-                insert_semantic_response(landmark, key, prompt, response, country)
-            except Exception as e:
-                print(f"❌ Failed to generate OpenAI response for {key}: {e}")
+
+                try:
+                    completion = openai.ChatCompletion.create(
+                        model="gpt-3.5-turbo",
+                        messages=[
+                            {"role": "system", "content": "You are a friendly and knowledgeable travel guide."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.7,
+                        max_tokens=500
+                    )
+                    response = completion['choices'][0]['message']['content'].strip()
+                    insert_semantic_response(landmark, key, prompt, response, country, interest, mapped_category)
+                except Exception as e:
+                    print(f"❌ Failed to generate OpenAI response for {key}: {e}")
 
 async def main():
     for landmark_obj in landmark_objs:
         insert_landmark_metadata(landmark_obj)
-        await generate_and_store_semantics(landmark_obj["name"], landmark_obj["type"])
+        await generate_and_store_semantics(landmark_obj)
 
 if __name__ == "__main__":
     asyncio.run(main())

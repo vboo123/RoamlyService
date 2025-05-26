@@ -51,8 +51,6 @@ class User(BaseModel):
     email: str
     country: str
     interestOne: str
-    interestTwo: str
-    interestThree: str
     age: str
     language: str
 
@@ -66,8 +64,6 @@ async def register_user(user: User):
             "user_id": user_id,
             "country": user.country,
             "interestOne": user.interestOne,
-            "interestTwo": user.interestTwo,
-            "interestThree": user.interestThree,
             "age": user.age,
             "language": user.language
         })
@@ -90,7 +86,7 @@ async def login_user(name: str = Query(...), email: str = Query(...)):
 @app.get("/get-properties/")
 async def get_properties(
     lat: float, long: float,
-    interestOne: str, interestTwo: str, interestThree: str,
+    interestOne: str,
     userAge: str, userCountry: str, userLanguage: str
 ):
     try:
@@ -109,9 +105,9 @@ async def get_properties(
             landmark_name = item["landmark_id"]
 
             keys_to_extract = [
-                f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{age_group}_small",
-                f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{age_group}_middle",
-                f"{landmark_name}_{interestOne}_{interestTwo}_{interestThree}_{userCountry}_{userLanguage}_{age_group}_large"
+                f"{landmark_name}_{interestOne}_{userCountry}_{userLanguage}_{age_group}_small",
+                f"{landmark_name}_{interestOne}_{userCountry}_{userLanguage}_{age_group}_middle",
+                f"{landmark_name}_{interestOne}_{userCountry}_{userLanguage}_{age_group}_large"
             ]
 
             responses_data = item.get("responses", {})
@@ -140,9 +136,7 @@ async def get_properties(
 async def get_landmark_response(
     landmark: str,
     userCountry: str = "default",
-    interestOne: str = "",
-    interestTwo: str = "",
-    interestThree: str = ""
+    interestOne: str = ""
 ):
     try:
         # Normalize

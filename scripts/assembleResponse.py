@@ -44,15 +44,19 @@ def assemble_response(
     for key in semantic_keys:
         try:
             full_key = f"{key}#{user_country}#{interest}"
+            print(f"🔍 Trying to query: landmark_id={landmark_id}, semantic_country_key={full_key}")
+
             response = semantic_table.query(
                 KeyConditionExpression=Key("landmark_id").eq(landmark_id) & Key("semantic_country_key").eq(full_key)
             )
+
             items = response.get("Items", [])
+            print(f"✅ Query returned {len(items)} items")
+
             if items:
                 facts[key] = items[0]["response"]
                 continue
 
-            # Fallback to default interest and country
             fallback_key = f"{key}#default#default"
             fallback = semantic_table.query(
                 KeyConditionExpression=Key("landmark_id").eq(landmark_id) & Key("semantic_country_key").eq(fallback_key)
@@ -60,9 +64,8 @@ def assemble_response(
             fallback_items = fallback.get("Items", [])
             if fallback_items:
                 facts[key] = fallback_items[0]["response"]
-
         except Exception as e:
-            print(f"Error fetching key {key}: {e}")
+            print(f"❌ Error fetching key {key}: {e}")
 
     assembled = f"Hey there! Welcome to the {landmark_id.replace('_', ' ')}. "
     for key in semantic_keys:

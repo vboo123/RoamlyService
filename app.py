@@ -141,7 +141,7 @@ async def get_landmark_response(
     try:
         # Normalize
         landmark_id = landmark.replace(" ", "_")
-        interests = [interestOne, interestTwo, interestThree]
+        interests = [interestOne]
         country_map = {
             "UnitedStatesofAmerica": "United States",
             "USA": "United States",

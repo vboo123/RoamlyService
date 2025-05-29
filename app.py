@@ -141,7 +141,6 @@ async def get_landmark_response(
     try:
         # Normalize
         landmark_id = landmark.replace(" ", "_")
-        interests = [interestOne]
         country_map = {
             "UnitedStatesofAmerica": "United States",
             "USA": "United States",
@@ -157,12 +156,12 @@ async def get_landmark_response(
         landmark_type = item.get("type", "monument")
 
         # Assemble response (uses query() under the hood)
-        text = assemble_response(landmark_id, landmark_type, userCountry, interests)
+        text = assemble_response(landmark_id, landmark_type, userCountry, interestOne)
 
         return {
             "landmark": landmark,
             "country": userCountry,
-            "interests": interests,
+            "interest": interestOne,
             "assembled_text": text
         }
 

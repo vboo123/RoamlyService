@@ -139,8 +139,11 @@ async def get_landmark_response(
     interestOne: str = ""
 ):
     try:
-        # Normalize
+        # Normalize input
         landmark_id = landmark.replace(" ", "_")
+        semantic_key = "origin.general"
+
+        # Normalize country mapping
         country_map = {
             "UnitedStatesofAmerica": "United States",
             "USA": "United States",
@@ -148,23 +151,31 @@ async def get_landmark_response(
         }
         userCountry = country_map.get(userCountry, userCountry)
 
-        # Get landmark type
-        result = landmarks_table.get_item(Key={"landmark_id": landmark_id})
-        item = result.get("Item")
-        if not item:
-            raise HTTPException(status_code=404, detail="Landmark not found")
-        landmark_type = item.get("type", "monument")
+        # Compose key
+        semantic_country_key = f"{semantic_key}#{userCountry}#{interestOne}"
 
-        # Assemble response (uses query() under the hood)
-        text = assemble_response(landmark_id, landmark_type, userCountry, interestOne)
+        # Query the semantic_responses table
+        semantic_table = dynamodb.Table("semantic_responses")
+        response = semantic_table.get_item(
+            Key={
+                "landmark_id": landmark_id,
+                "semantic_country_key": semantic_country_key
+            }
+        )
+
+        item = response.get("Item")
+        if not item:
+            raise HTTPException(status_code=404, detail="No semantic response found")
 
         return {
-            "landmark": landmark,
+            "landmark": landmark_id,
             "country": userCountry,
             "interest": interestOne,
-            "assembled_text": text
+            "assembled_text": item["response"],
+            "audio_url": item.get("audio_url")  # Optional in case it's missing
         }
 
     except Exception as e:
         print("🔥 ERROR in /landmark-response:", e)
-        raise HTTPException(status_code=500, detail=f"Failed to assemble response: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch semantic response: {str(e)}")
+

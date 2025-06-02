@@ -11,10 +11,13 @@ import os
 import traceback
 from dotenv import load_dotenv
 import decimal
+import openai
+from pinecone import Pinecone
 from scripts.assembleResponse import assemble_response
 
 # === Load environment variables ===
 load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # === Setup DynamoDB ===
 dynamodb = boto3.resource(
@@ -25,6 +28,11 @@ dynamodb = boto3.resource(
 )
 landmarks_table = dynamodb.Table("Landmarks")
 users_table = dynamodb.Table("Users")
+semantic_table = dynamodb.Table("semantic_responses")
+
+# === Pinecone ===
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+index = pc.Index(os.getenv("PINECONE_INDEX_NAME", "roamly-semantic"))
 
 # === FastAPI app ===
 app = FastAPI()
@@ -139,11 +147,9 @@ async def get_landmark_response(
     interestOne: str = ""
 ):
     try:
-        # Normalize input
         landmark_id = landmark.replace(" ", "_")
         semantic_key = "origin.general"
 
-        # Normalize country mapping
         country_map = {
             "UnitedStatesofAmerica": "United States",
             "USA": "United States",
@@ -151,11 +157,8 @@ async def get_landmark_response(
         }
         userCountry = country_map.get(userCountry, userCountry)
 
-        # Compose key
         semantic_country_key = f"{semantic_key}#{userCountry}#{interestOne}"
 
-        # Query the semantic_responses table
-        semantic_table = dynamodb.Table("semantic_responses")
         response = semantic_table.get_item(
             Key={
                 "landmark_id": landmark_id,
@@ -172,10 +175,37 @@ async def get_landmark_response(
             "country": userCountry,
             "interest": interestOne,
             "assembled_text": item["response"],
-            "audio_url": item.get("audio_url")  # Optional in case it's missing
+            "audio_url": item.get("audio_url")
         }
 
     except Exception as e:
         print("🔥 ERROR in /landmark-response:", e)
         raise HTTPException(status_code=500, detail=f"Failed to fetch semantic response: {str(e)}")
 
+class SemanticQuery(BaseModel):
+    question: str
+
+@app.post("/semantic-search")
+async def semantic_search(query: SemanticQuery):
+    try:
+        embedding = openai.Embedding.create(
+            model="text-embedding-3-small",
+            input=query.question
+        )["data"][0]["embedding"]
+
+        result = index.query(
+            vector=embedding,
+            top_k=1,
+            include_metadata=True
+        )
+
+        if not result.get("matches"):
+            raise HTTPException(status_code=404, detail="No semantic match found.")
+
+        return {
+            "match_score": result["matches"][0]["score"],
+            "response": result["matches"][0]["metadata"]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

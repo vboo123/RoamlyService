@@ -108,3 +108,4 @@ tzdata==2024.2
 urllib3==2.2.3
 uvicorn==0.32.1
 wcwidth==0.2.13
+pinecone-client>=3.0.0

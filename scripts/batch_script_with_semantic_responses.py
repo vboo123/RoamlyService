@@ -2,13 +2,11 @@ import os
 import json
 import hashlib
 import asyncio
-from itertools import combinations
 from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
 from geolib import geohash
 import boto3
 import openai
-from google.cloud import texttospeech
 
 # ---- Setup ----
 load_dotenv()
@@ -18,7 +16,7 @@ dynamodb = boto3.resource(
     'dynamodb',
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    region_name='us-east-1'
+    region_name='us-east-2'
 )
 semantic_table = dynamodb.Table("semantic_responses")
 landmark_table = dynamodb.Table("Landmarks")
@@ -30,11 +28,7 @@ s3_client = boto3.client(
     region_name=os.getenv("AWS_REGION")
 )
 S3_BUCKET = os.getenv("S3_BUCKET_NAME")
-AUDIO_URL_BASE = os.getenv("AUDIO_URL_BASE")
-AUDIO_DIR = "audio"
-os.makedirs(AUDIO_DIR, exist_ok=True)
-
-TTS_CLIENT = texttospeech.TextToSpeechClient()
+S3_URL_BASE = os.getenv("S3_URL_BASE")
 
 # === Load semantic config ===
 with open("semantic_config.json", "r") as f:
@@ -55,7 +49,6 @@ interests = [
 languages = ["English"]
 countries = ["United States", "India", "Mexico"]
 
-# TODO: This will need to be updated depending on the prompts we define in semantic_config
 interest_mapping = {
     "Nature": "Nature",
     "History": "History",
@@ -74,39 +67,17 @@ def get_coordinates(place):
     location = geolocator.geocode(place)
     return (location.latitude, location.longitude) if location else (None, None)
 
-def upload_to_s3(local_path: str, s3_key: str):
+def upload_json_to_s3(data: dict, s3_key: str) -> str:
+    local_path = os.path.join("/tmp", s3_key.split("/")[-1])
+    with open(local_path, "w") as f:
+        json.dump(data, f)
     s3_client.upload_file(
         local_path,
         S3_BUCKET,
         s3_key,
-        ExtraArgs={"ContentType": "audio/mpeg"}
+        ExtraArgs={"ContentType": "application/json"}
     )
-
-def generate_mp3_if_missing(text: str) -> str:
-    text_hash = hashlib.md5(text.encode()).hexdigest()
-    filename = f"{text_hash}.mp3"
-    local_path = os.path.join(AUDIO_DIR, filename)
-    s3_key = f"audio/{filename}"
-    audio_url = AUDIO_URL_BASE + filename
-
-    if not os.path.exists(local_path):
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-        voice = texttospeech.VoiceSelectionParams(
-            language_code="en-US",
-            name="en-US-Wavenet-D",
-            ssml_gender=texttospeech.SsmlVoiceGender.MALE
-        )
-        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-        response = TTS_CLIENT.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
-        with open(local_path, "wb") as out:
-            out.write(response.audio_content)
-
-    try:
-        upload_to_s3(local_path, s3_key)
-    except Exception as e:
-        print(f"⚠️ Failed to upload audio: {e}")
-
-    return audio_url
+    return S3_URL_BASE + s3_key
 
 def insert_landmark_metadata(landmark_obj):
     name = landmark_obj["name"]
@@ -126,28 +97,51 @@ def insert_landmark_metadata(landmark_obj):
     })
     print(f"✅ Inserted landmark metadata for {name}")
 
+
+def sanitize_filename(s: str) -> str:
+    return s.replace(" ", "_").replace("/", "_").lower()
+
 def insert_semantic_response(landmark, semantic_key, question, response, country, interest=None, mapped_category=None):
-    audio_url = generate_mp3_if_missing(response)
+    # Prepare and upload JSON
+    response_data = {
+        "landmark": landmark,
+        "semantic_key": semantic_key,
+        "country": country,
+        "interest": interest,
+        "mapped_category": mapped_category,
+        "question": question,
+        "response": response
+    }
+
+    safe_landmark = sanitize_filename(landmark)
+    safe_key = sanitize_filename(semantic_key)
+    safe_country = sanitize_filename(country)
+    safe_interest = sanitize_filename(interest) if interest else "general"
+
+    filename = f"{safe_landmark}_{safe_key}_{safe_country}_{safe_interest}.json"
+    s3_key = f"semantic_responses/{filename}"
+
+    json_url = upload_json_to_s3(response_data, s3_key)
+
+    # Store reference in DynamoDB
     item = {
         "landmark_id": landmark.replace(" ", "_"),
         "semantic_country_key": f"{semantic_key}#{country}#{interest}",
         "semantic_key": semantic_key,
         "user_country": country,
-        "query": question,
-        "response": response,
-        "audio_url": audio_url
+        "json_url": json_url
     }
     if interest:
         item["user_interest"] = interest
         item["mapped_category"] = mapped_category
 
     semantic_table.put_item(Item=item)
-    print(f"✅ Inserted semantic key: {semantic_key} ({country})")
+    print(f"✅ Inserted semantic key reference: {semantic_key} ({country})")
 
 async def generate_and_store_semantics(landmark_obj):
     landmark = landmark_obj["name"]
     landmark_type = landmark_obj["type"]
-    city = landmark_obj.get("city", "a city")  # fallback if city is missing
+    city = landmark_obj.get("city", "a city")
 
     semantic_keys = get_relevant_keys(landmark_type)
     for key in semantic_keys:

@@ -136,12 +136,12 @@ async def get_properties(
 async def get_landmark_response(
     landmark: str,
     userCountry: str = "default",
-    interestOne: str = ""
+    interestOne: str = "",
+    semanticKey: str = "origin.general"
 ):
     try:
         # Normalize input
         landmark_id = landmark.replace(" ", "_")
-        semantic_key = "origin.general"
 
         # Normalize country mapping
         country_map = {
@@ -151,8 +151,8 @@ async def get_landmark_response(
         }
         userCountry = country_map.get(userCountry, userCountry)
 
-        # Compose key
-        semantic_country_key = f"{semantic_key}#{userCountry}#{interestOne}"
+        # Compose key dynamically based on semanticKey
+        semantic_country_key = f"{semanticKey}#{userCountry}#{interestOne}"
 
         # Query the semantic_responses table
         semantic_table = dynamodb.Table("semantic_responses")
@@ -169,13 +169,13 @@ async def get_landmark_response(
 
         return {
             "landmark": landmark_id,
+            "semantic_key": semanticKey,
             "country": userCountry,
             "interest": interestOne,
             "assembled_text": item["response"],
-            "audio_url": item.get("audio_url")  # Optional in case it's missing
+            "audio_url": item.get("audio_url")
         }
 
     except Exception as e:
         print("🔥 ERROR in /landmark-response:", e)
         raise HTTPException(status_code=500, detail=f"Failed to fetch semantic response: {str(e)}")
-

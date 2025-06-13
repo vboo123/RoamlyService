@@ -163,6 +163,8 @@ async def get_landmark_response(
             }
         )
 
+        print(response)
+
         item = response.get("Item")
         if not item:
             raise HTTPException(status_code=404, detail="No semantic response found")
@@ -172,8 +174,7 @@ async def get_landmark_response(
             "semantic_key": semanticKey,
             "country": userCountry,
             "interest": interestOne,
-            "assembled_text": item["response"],
-            "audio_url": item.get("audio_url")
+            "json_url": item["json_url"],
         }
 
     except Exception as e:

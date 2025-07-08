@@ -11,6 +11,7 @@ import os
 import traceback
 from dotenv import load_dotenv
 import decimal
+import requests
 from scripts.assembleResponse import assemble_response
 
 # === Load environment variables ===
@@ -90,7 +91,8 @@ async def get_properties(
     userAge: str, userCountry: str, userLanguage: str
 ):
     try:
-        geohash_code = geohash.encode(lat, long, precision=6)
+        # geohash_code = geohash.encode(lat, long, precision=6)
+        geohash_code = "9q60vc"
         print("Query geohash:", geohash_code)
 
         scan_results = landmarks_table.scan(
@@ -114,7 +116,8 @@ async def get_properties(
             filtered_responses = {key: responses_data.get(key) for key in keys_to_extract if key in responses_data}
 
             properties.append({
-                "geohash": item.get("geohash"),
+                # "geohash": item.get("geohash"),
+                "geohash": "9q60vc",
                 "latitude": item["coordinates"]["lat"],
                 "longitude": item["coordinates"]["lng"],
                 "landmarkName": landmark_name,
@@ -140,6 +143,7 @@ async def get_landmark_response(
     semanticKey: str = "origin.general"
 ):
     try:
+        print("🔍 landmark-response:", landmark, userCountry, interestOne, semanticKey)
         # Normalize input
         landmark_id = landmark.replace(" ", "_")
 
@@ -169,13 +173,29 @@ async def get_landmark_response(
         if not item:
             raise HTTPException(status_code=404, detail="No semantic response found")
 
-        return {
-            "landmark": landmark_id,
-            "semantic_key": semanticKey,
-            "country": userCountry,
-            "interest": interestOne,
-            "json_url": item["json_url"],
-        }
+        # Fetch the actual response content from S3
+        try:
+            json_response = requests.get(item["json_url"], timeout=10)
+            json_response.raise_for_status()  # Raise an exception for bad status codes
+            json_data = json_response.json()
+            return {
+                "landmark": landmark_id,
+                "semantic_key": semanticKey,
+                "country": userCountry,
+                "interest": interestOne,
+                "response": json_data.get("response", ""),
+                "json_url": item["json_url"],
+            }
+        except requests.RequestException as e:
+            print(f"Failed to fetch response from S3: {e}")
+            return {
+                "landmark": landmark_id,
+                "semantic_key": semanticKey,
+                "country": userCountry,
+                "interest": interestOne,
+                "response": "Response content unavailable",
+                "json_url": item["json_url"],
+            }
 
     except Exception as e:
         print("🔥 ERROR in /landmark-response:", e)

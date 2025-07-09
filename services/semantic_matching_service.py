@@ -1,11 +1,18 @@
 import json
 import os
+from sentence_transformers import SentenceTransformer, util
+import faiss
+import numpy as np
 
 class SemanticMatchingService:
     def __init__(self):
         self.landmarks_data = self._load_landmarks()
         self.semantic_config = self._load_semantic_config()
-        self.keyword_mappings = self._get_keyword_mappings()
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.dimension = 384
+        self.index = None
+        self.metadata = []
+        self._build_faiss_index()
     
     def _load_landmarks(self):
         """Load landmarks metadata."""
@@ -17,24 +24,141 @@ class SemanticMatchingService:
         with open("scripts/semantic_config.json", "r") as f:
             return json.load(f)
     
-    def _get_keyword_mappings(self):
-        """Define keyword mappings for semantic keys."""
-        return {
-            "origin.general": ["how did it come to be", "when was it built", "how was it created", "what's the history", "origin story"],
-            "origin.name": ["name meaning", "why called", "naming", "name origin", "what does the name mean"],
-            "architecture.style": ["what style is it", "architecture", "design", "how does it look", "architectural features", "architectural style"],
-            "height.general": ["how tall", "height", "how high", "tallness", "elevation"],
-            "experience.vibe": ["what's the vibe", "atmosphere", "feel", "mood", "what's it like"],
-            "access.cost": ["how much", "cost", "price", "ticket", "entry fee"],
-            "access.hours": ["hours", "opening times", "when open", "schedule"],
-            "culture.symbolism": ["symbols", "meaning", "symbolism", "cultural significance"],
-            "myths.legends": ["myths", "legends", "stories", "folklore", "tales"],
-            "access.crowds": ["crowds", "busy", "crowded", "people", "visitors"]
+    def _build_faiss_index(self):
+        """Build FAISS index with semantic key examples."""
+        print("🔧 Building FAISS semantic index...")
+        
+        # Define semantic key examples with multiple variations
+        semantic_examples = {
+            "origin.general": [
+                "how did it come to be",
+                "when was it built", 
+                "how was it created",
+                "what's the history",
+                "origin story",
+                "when was this built",
+                "how did this get here",
+                "what's the story behind this"
+            ],
+            "origin.name": [
+                "name meaning",
+                "why called",
+                "naming",
+                "name origin", 
+                "what does the name mean",
+                "why is it called",
+                "how did it get its name",
+                "what's the meaning of the name"
+            ],
+            "architecture.style": [
+                "what style is it",
+                "architecture",
+                "design",
+                "how does it look",
+                "architectural features",
+                "architectural style",
+                "what kind of building is this",
+                "how was this designed"
+            ],
+            "height.general": [
+                "how tall",
+                "height",
+                "how high",
+                "tallness",
+                "elevation",
+                "what's the height",
+                "how tall is this",
+                "what's the elevation"
+            ],
+            "experience.vibe": [
+                "what's the vibe",
+                "atmosphere",
+                "feel",
+                "mood",
+                "what's it like",
+                "how does it feel",
+                "what's the atmosphere like",
+                "what's the mood here"
+            ],
+            "access.cost": [
+                "how much",
+                "cost",
+                "price",
+                "ticket",
+                "entry fee",
+                "how much does it cost",
+                "what's the price",
+                "how much to enter"
+            ],
+            "access.hours": [
+                "hours",
+                "opening times",
+                "when open",
+                "schedule",
+                "what time does it open",
+                "when is it open",
+                "what are the hours",
+                "opening hours"
+            ],
+            "culture.symbolism": [
+                "symbols",
+                "meaning",
+                "symbolism",
+                "cultural significance",
+                "what does it represent",
+                "what's the meaning",
+                "cultural meaning",
+                "what does this symbolize"
+            ],
+            "myths.legends": [
+                "myths",
+                "legends",
+                "stories",
+                "folklore",
+                "tales",
+                "urban legends",
+                "mythical stories",
+                "legendary tales"
+            ],
+            "access.crowds": [
+                "crowds",
+                "busy",
+                "crowded",
+                "people",
+                "visitors",
+                "how many people",
+                "how crowded",
+                "how busy",
+                "how many visitors",
+                "how many people visit",
+                "how many people come",
+                "how many people tend to come",
+                "how many people like to visit"
+            ]
         }
+        
+        # Build vectors and metadata
+        vectors = []
+        self.metadata = []
+        
+        for semantic_key, examples in semantic_examples.items():
+            for example in examples:
+                emb = self.model.encode(example)
+                vectors.append(emb)
+                self.metadata.append({
+                    "semantic_key": semantic_key,
+                    "example": example
+                })
+        
+        # Create FAISS index
+        self.index = faiss.IndexFlatL2(self.dimension)
+        self.index.add(np.array(vectors).astype('float32'))
+        
+        print(f"✅ FAISS index built with {len(self.metadata)} semantic examples")
     
-    def get_landmark_specific_semantic_key(self, question: str, landmark_id: str, threshold: float = 0.7):
+    def get_landmark_specific_semantic_key(self, question: str, landmark_id: str, threshold: float = 0.4):
         """
-        Get the best semantic key for a question, using existing metadata structure.
+        Get the best semantic key for a question using FAISS-based semantic matching.
         """
         try:
             # 1. Find landmark and get its type
@@ -58,29 +182,34 @@ class SemanticMatchingService:
             print(f"🔍 Landmark: {landmark_id} -> Type: {landmark_type}")
             print(f"📋 Available keys: {available_keys}")
             
-            # 3. Simple keyword matching
-            question_lower = question.lower()
+            # 3. Use FAISS semantic matching
+            question_emb = self.model.encode(question).reshape(1, -1).astype('float32')
+            D, I = self.index.search(question_emb, k=3)  # Get top 3 matches
             
-            # 4. Find matching semantic key
             best_match = None
-            best_score = 0
+            best_score = 0.0  # Start with 0, higher similarity is better
             
-            for semantic_key in available_keys:
-                if semantic_key in self.keyword_mappings:
-                    keywords = self.keyword_mappings[semantic_key]
-                    for keyword in keywords:
-                        if keyword in question_lower:
-                            # Simple scoring: longer keyword matches get higher scores
-                            score = len(keyword) / len(question_lower)
-                            if score > best_score:
-                                best_score = score
-                                best_match = semantic_key
+            for i, (distance, idx) in enumerate(zip(D[0], I[0])):
+                match = self.metadata[idx]
+                semantic_key = match["semantic_key"]
+                example = match["example"]
+                
+                # Only consider keys available for this landmark type
+                if semantic_key in available_keys:
+                    # Convert L2 distance to similarity score (0-1, higher is better)
+                    similarity_score = 1.0 / (1.0 + distance)
+                    
+                    print(f"🔍 Match {i+1}: {semantic_key} (example: '{example}') - Distance: {distance:.3f}, Similarity: {similarity_score:.3f}")
+                    
+                    if similarity_score > best_score:
+                        best_score = similarity_score
+                        best_match = semantic_key
             
-            if best_match and best_score > 0.1:  # Threshold for keyword matching
-                print(f"✅ Keyword match: {best_match} (score: {best_score:.3f})")
+            if best_match and best_score > threshold:
+                print(f"✅ Semantic match: {best_match} (similarity: {best_score:.3f})")
                 return best_match, best_score
             else:
-                print(f"❌ No keyword match found")
+                print(f"❌ No confident semantic match found (best: {best_match}, score: {best_score:.3f})")
                 return None, None
                 
         except Exception as e:

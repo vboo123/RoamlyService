@@ -108,3 +108,5 @@ tzdata==2024.2
 urllib3==2.2.3
 uvicorn==0.32.1
 wcwidth==0.2.13
+SpeechRecognition==3.10.0
+pydub==0.25.1

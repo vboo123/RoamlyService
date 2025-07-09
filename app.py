@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from geolib import geohash
@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 import decimal
 import requests
 from scripts.assembleResponse import assemble_response
+from services.audio_processing_service import audio_processing_service
+from services.semantic_matching_service import semantic_matching_service
 
 # === Load environment variables ===
 load_dotenv()
@@ -207,105 +209,59 @@ class LandmarkQuestion(BaseModel):
     userCountry: str = "default"
     interestOne: str = ""
 
-def get_landmark_specific_semantic_key(question: str, landmark_id: str, threshold: float = 0.7):
-    """
-    Get the best semantic key for a question, using existing metadata structure.
-    """
-    try:
-        # 1. Load landmarks metadata to get landmark type
-        with open("scripts/landmarks.json", "r") as f:
-            landmarks_data = json.load(f)
-        
-        # 2. Load semantic config
-        with open("scripts/semantic_config.json", "r") as f:
-            semantic_config = json.load(f)
-        
-        # 3. Find landmark and get its type - FIXED: Better name matching
-        landmark_type = None
-        normalized_landmark_id = landmark_id.lower().replace("_", " ")
-        
-        for landmark in landmarks_data:
-            landmark_name_lower = landmark["name"].lower()
-            if landmark_name_lower == normalized_landmark_id:
-                landmark_type = landmark["type"]
-                break
-        
-        if not landmark_type:
-            print(f"⚠️ Landmark '{landmark_id}' not found in landmarks.json")
-            print(f"🔍 Looking for: '{normalized_landmark_id}'")
-            print(f"📋 Available landmarks: {[l['name'] for l in landmarks_data]}")
-            return None, None
-        
-        # 4. Get available semantic keys for this landmark type
-        available_keys = list(semantic_config.get(landmark_type, {}).keys())
-        print(f"🔍 Landmark: {landmark_id} -> Type: {landmark_type}")
-        print(f"📋 Available keys: {available_keys}")
-        
-        # 5. Simple keyword matching for now (we'll enhance this later)
-        question_lower = question.lower()
-        
-        # Define keyword mappings
-        keyword_mappings = {
-            "origin.general": ["how did it come to be", "when was it built", "how was it created", "what's the history", "origin story"],
-            "origin.name": ["name meaning", "why called", "naming", "name origin", "what does the name mean"],
-            "architecture.style": ["what style is it", "architecture", "design", "how does it look", "architectural features", "architectural style"],
-            "height.general": ["how tall", "height", "how high", "tallness", "elevation"],
-            "experience.vibe": ["what's the vibe", "atmosphere", "feel", "mood", "what's it like"],
-            "access.cost": ["how much", "cost", "price", "ticket", "entry fee"],
-            "access.hours": ["hours", "opening times", "when open", "schedule"],
-            "culture.symbolism": ["symbols", "meaning", "symbolism", "cultural significance"],
-            "myths.legends": ["myths", "legends", "stories", "folklore", "tales"],
-            "access.crowds": ["crowds", "busy", "crowded", "people", "visitors"]
-        }
-        
-        # 6. Find matching semantic key
-        best_match = None
-        best_score = 0
-        
-        for semantic_key in available_keys:
-            if semantic_key in keyword_mappings:
-                keywords = keyword_mappings[semantic_key]
-                for keyword in keywords:
-                    if keyword in question_lower:
-                        # Simple scoring: longer keyword matches get higher scores
-                        score = len(keyword) / len(question_lower)
-                        if score > best_score:
-                            best_score = score
-                            best_match = semantic_key
-        
-        if best_match and best_score > 0.1:  # Threshold for keyword matching
-            print(f"✅ Keyword match: {best_match} (score: {best_score:.3f})")
-            return best_match, best_score
-        else:
-            print(f"❌ No keyword match found")
-            return None, None
-            
-    except Exception as e:
-        print(f"🔥 ERROR in semantic matching: {e}")
-        return None, None
+# Remove the old function - now using semantic_matching_service
 
+@app.post("/ask-landmark")
 @app.post("/ask-landmark/")
-async def ask_landmark_question(request: LandmarkQuestion):
+async def ask_landmark_question(
+    landmark: str = Form(...),
+    question: str = Form(None),
+    userCountry: str = Form("default"),
+    interestOne: str = Form(""),
+    audio_file: UploadFile = File(None)
+):
     """
     Handle follow-up questions by:
-    1. Using semantic matching to find the most relevant semantic key
-    2. Fetching the response using that key
-    3. Falling back to LLM if no static response found
+    1. Accepting either text question or audio file
+    2. Converting audio to text if provided
+    3. Using semantic matching to find the most relevant semantic key
+    4. Fetching the response using that key
+    5. Falling back to LLM if no static response found
     """
     try:
         # 1. Normalize landmark ID
-        landmark_id = request.landmark.replace(" ", "_")
+        landmark_id = landmark.replace(" ", "_")
+        
+        # 2. Get the question - either from text or convert from audio
+        if audio_file:
+            print(f"🎤 Processing audio file: {audio_file.filename}")
+            
+            # Read audio file
+            audio_content = await audio_file.read()
+            
+            # Get file extension
+            file_extension = audio_file.filename.split(".")[-1] if "." in audio_file.filename else "m4a"
+            
+            # Convert audio to text
+            question_text = await audio_processing_service.audio_to_text(audio_content, file_extension)
+            print(f"🎤 Audio converted to question: '{question_text}'")
+            
+        elif question:
+            question_text = question
+            print(f"📝 Processing text question: '{question_text}'")
+        else:
+            raise HTTPException(status_code=400, detail="Either question or audio_file must be provided")
         
         print(f"🎯 Processing question for landmark: {landmark_id}")
-        print(f"❓ Question: {request.question}")
+        print(f"❓ Question: {question_text}")
         
-        # 2. Get semantic key using existing metadata structure
-        semantic_key, confidence = get_landmark_specific_semantic_key(
-            request.question, 
+        # 3. Get semantic key using FAISS-based semantic matching
+        semantic_key, confidence = semantic_matching_service.get_landmark_specific_semantic_key(
+            question_text, 
             landmark_id
         )
         
-        # 3. If we found a semantic key, try to get static response
+        # 4. If we found a semantic key, try to get static response
         if semantic_key:
             # Normalize country mapping
             country_map = {
@@ -313,10 +269,10 @@ async def ask_landmark_question(request: LandmarkQuestion):
                 "USA": "United States",
                 "US": "United States"
             }
-            userCountry = country_map.get(request.userCountry, request.userCountry)
+            userCountry = country_map.get(userCountry, userCountry)
 
             # Compose key dynamically based on semanticKey
-            semantic_country_key = f"{semantic_key}#{userCountry}#{request.interestOne}"
+            semantic_country_key = f"{semantic_key}#{userCountry}#{interestOne}"
             print(f"🔑 Looking for semantic key: {semantic_country_key}")
 
             # Query the semantic_responses table
@@ -331,23 +287,43 @@ async def ask_landmark_question(request: LandmarkQuestion):
             item = response.get("Item")
             if item:
                 print(f"✅ Found static response")
-                return {
-                    "landmark": landmark_id,
-                    "question": request.question,
-                    "answer": item.get("response", ""),
-                    "semantic_key": semantic_key,
-                    "confidence": float(confidence),
-                    "source": "static",
-                    "json_url": item.get("json_url", "")
-                }
+                
+                # Fetch the actual response content from S3
+                try:
+                    json_response = requests.get(item["json_url"], timeout=10)
+                    json_response.raise_for_status()
+                    json_data = json_response.json()
+                    actual_response = json_data.get("response", "")
+                    print(f"📄 Fetched response from S3: {actual_response[:100]}...")
+                    
+                    return {
+                        "landmark": landmark_id,
+                        "question": question_text,
+                        "answer": actual_response,
+                        "semantic_key": semantic_key,
+                        "confidence": float(confidence),
+                        "source": "static",
+                        "json_url": item.get("json_url", "")
+                    }
+                except requests.RequestException as e:
+                    print(f"Failed to fetch response from S3: {e}")
+                    return {
+                        "landmark": landmark_id,
+                        "question": question_text,
+                        "answer": "Response content unavailable",
+                        "semantic_key": semantic_key,
+                        "confidence": float(confidence),
+                        "source": "static",
+                        "json_url": item.get("json_url", "")
+                    }
             else:
                 print(f"⚠️ No static response found for key: {semantic_country_key}")
         
-        # 4. Fallback response (for now, just return a message)
+        # 5. Fallback response (for now, just return a message)
         # TODO: Integrate with LLM service
         return {
             "landmark": landmark_id,
-            "question": request.question,
+            "question": question_text,
             "answer": f"I don't have a specific answer for that question about {landmark_id}. This would be a good candidate for LLM generation.",
             "semantic_key": None,
             "confidence": None,

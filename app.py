@@ -15,6 +15,8 @@ import requests
 from scripts.assembleResponse import assemble_response
 from services.audio_processing_service import audio_processing_service
 from services.semantic_matching_service import semantic_matching_service
+from typing import List
+from utils.age_utils import AgeUtils
 
 # === Load environment variables ===
 load_dotenv()
@@ -140,61 +142,104 @@ async def get_properties(
 @app.get("/landmark-response/")
 async def get_landmark_response(
     landmark: str,
-    userCountry: str = "default",
-    interestOne: str = "",
-    semanticKey: str = "origin.general"
+    interest: List[str] = Query(default=["Nature"]),
+    userCountry: str = "United States",
+    semanticKey: str = "origin.general",
+    age: int = 25
 ):
+    """
+    Get landmark response based on user criteria
+    Args:
+        landmark: Landmark name
+        interest: List of interests (will use first element)
+        userCountry: User's country (defaults to "United States")
+        semanticKey: Semantic key to query (defaults to "origin.general")
+        age: User's age as integer (defaults to 25)
+    """
     try:
-        print("🔍 landmark-response:", landmark, userCountry, interestOne, semanticKey)
+        print(f"🔍 landmark-response: {landmark}, {userCountry}, {interest}, {semanticKey}, {age}")
+        
         # Normalize input
         landmark_id = landmark.replace(" ", "_")
-
-        # Normalize country mapping
-        country_map = {
-            "UnitedStatesofAmerica": "United States",
-            "USA": "United States",
-            "US": "United States"
-        }
-        userCountry = country_map.get(userCountry, userCountry)
-
-        # Compose key dynamically based on semanticKey
-        semantic_country_key = f"{semanticKey}#{userCountry}#{interestOne}"
+        
+        # Get first interest from array (since we only support 1 for now)
+        user_interest = interest[0] if interest else "Nature"
+        
+        # Classify age
+        age_group = AgeUtils.classify_age(age)
 
         # Query the semantic_responses table
         semantic_table = dynamodb.Table("semantic_responses")
         response = semantic_table.get_item(
             Key={
                 "landmark_id": landmark_id,
-                "semantic_country_key": semantic_country_key
+                "semantic_key": semanticKey
             }
         )
-
-        print(response)
 
         item = response.get("Item")
         if not item:
             raise HTTPException(status_code=404, detail="No semantic response found")
 
-        # Fetch the actual response content from S3
+        # Fetch the consolidated JSON from S3
         try:
             json_response = requests.get(item["json_url"], timeout=10)
-            json_response.raise_for_status()  # Raise an exception for bad status codes
+            json_response.raise_for_status()
             json_data = json_response.json()
+            
+            # Find the specific response based on user criteria
+            responses = json_data.get("responses", [])
+            best_response = None
+            
+            # Look for exact match: country + category + age_group
+            for resp in responses:
+                if (resp.get("user_country") == userCountry and 
+                    resp.get("mapped_category") == user_interest and
+                    resp.get("user_age") == age_group):
+                    best_response = resp["response"]
+                    break
+            
+            # Fallback: try country + category match
+            if not best_response:
+                for resp in responses:
+                    if (resp.get("user_country") == userCountry and 
+                        resp.get("mapped_category") == user_interest):
+                        best_response = resp["response"]
+                        break
+            
+            # Fallback: try just country match
+            if not best_response:
+                for resp in responses:
+                    if resp.get("user_country") == userCountry:
+                        best_response = resp["response"]
+                        break
+            
+            # Final fallback: use first available response
+            if not best_response and responses:
+                best_response = responses[0]["response"]
+            
             return {
                 "landmark": landmark_id,
                 "semantic_key": semanticKey,
                 "country": userCountry,
-                "interest": interestOne,
-                "response": json_data.get("response", ""),
+                "interest": user_interest,
+                "age": age,
+                "age_group": age_group,
+                "response": best_response or "No response found",
                 "json_url": item["json_url"],
+                "extracted_details": json_data.get("extracted_details", {}),
+                "specific_youtubes": json_data.get("specific_Youtubes", {})
             }
+            
         except requests.RequestException as e:
             print(f"Failed to fetch response from S3: {e}")
             return {
                 "landmark": landmark_id,
                 "semantic_key": semanticKey,
                 "country": userCountry,
-                "interest": interestOne,
+                "interest": user_interest,
+                "age": age,
+                "age_group": age_group,
                 "response": "Response content unavailable",
                 "json_url": item["json_url"],
             }

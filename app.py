@@ -1,18 +1,15 @@
 from fastapi import FastAPI, HTTPException, Query, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from geolib import geohash
 from boto3.dynamodb.conditions import Attr
 import boto3
 import uuid
 import json
-import hashlib
 import os
 import traceback
 from dotenv import load_dotenv
 import decimal
 import requests
-from scripts.assembleResponse import assemble_response
 from services.audio_processing_service import audio_processing_service
 from services.semantic_matching_service import semantic_matching_service
 from typing import List

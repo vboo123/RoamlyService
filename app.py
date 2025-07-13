@@ -139,7 +139,7 @@ async def get_properties(
 @app.get("/landmark-response/")
 async def get_landmark_response(
     landmark: str,
-    interest: List[str] = Query(default=["Nature"]),
+    interest: str = Query("Nature", alias="interest[]"),  # Handle the axios array format
     userCountry: str = "United States",
     semanticKey: str = "origin.general",
     age: int = 25
@@ -148,7 +148,7 @@ async def get_landmark_response(
     Get landmark response based on user criteria
     Args:
         landmark: Landmark name
-        interest: List of interests (will use first element)
+        interest: Interest string (handles axios array format)
         userCountry: User's country (defaults to "United States")
         semanticKey: Semantic key to query (defaults to "origin.general")
         age: User's age as integer (defaults to 25)
@@ -159,8 +159,8 @@ async def get_landmark_response(
         # Normalize input
         landmark_id = landmark.replace(" ", "_")
         
-        # Get first interest from array (since we only support 1 for now)
-        user_interest = interest[0] if interest else "Nature"
+        # Use interest directly since it's now a string
+        user_interest = interest if interest else "Nature"
         
         # Classify age
         age_group = AgeUtils.classify_age(age)

@@ -59,5 +59,37 @@ class LLMService:
             print(f"OpenAI API error: {e}")
             raise
 
+    async def generate_response_with_prompt_and_age(
+        self, prompt: str, question: str, landmark_id: str, 
+        user_country: str, interest: str, age_group: str
+    ) -> str:
+        """Generate response using a custom prompt with age_group (like batch script)"""
+        try:
+            # Format the prompt with all variables (including age_group)
+            formatted_prompt = prompt.format(
+                landmark=landmark_id.replace("_", " "),
+                userCountry=user_country,
+                mappedCategory=interest,
+                age_group=age_group
+            )
+            
+            # Add the user's question to the prompt
+            full_prompt = f"{formatted_prompt}\n\nUser Question: {question}\n\nResponse:"
+            
+            # Use the existing LLM generation logic
+            response = await self.generate_response(
+                question=full_prompt,
+                landmark_id=landmark_id,
+                landmark_type="general",  # For dynamic semantic keys
+                user_country=user_country,
+                interest=interest
+            )
+            
+            return response
+            
+        except Exception as e:
+            print(f"Error generating response with custom prompt and age: {e}")
+            return f"I apologize, but I'm unable to provide specific information about {landmark_id.replace('_', ' ')} at the moment. Please try asking a different question."
+
 # Global instance
 llm_service = LLMService() 

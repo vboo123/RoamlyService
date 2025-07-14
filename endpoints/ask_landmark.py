@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from services.audio_processing_service import audio_processing_service
 from services.semantic_matching_service import semantic_matching_service
 from services.llm_service import llm_service
+# Remove this line: from services.dynamic_semantic_service import dynamic_semantic_service
 
 # === Load environment variables ===
 load_dotenv()
@@ -33,6 +34,110 @@ s3_client = boto3.client(
 S3_BUCKET = os.getenv("S3_BUCKET_NAME")
 S3_URL_BASE = os.getenv("S3_URL_BASE")
 
+# === Add simple semantic key creation logic ===
+def create_semantic_key_from_question(question_text: str, landmark_id: str) -> str:
+    """Create a semantic key based on the question content"""
+    question_lower = question_text.lower()
+    
+    # Simple keyword-based mapping
+    if any(word in question_lower for word in ["jog", "run", "exercise", "workout", "fitness"]):
+        return "recreation.nearby"
+    elif any(word in question_lower for word in ["eat", "food", "restaurant", "dining", "lunch", "dinner"]):
+        return "dining.nearby"
+    elif any(word in question_lower for word in ["park", "parking", "car", "drive"]):
+        return "access.parking"
+    elif any(word in question_lower for word in ["bus", "transport", "transit", "subway", "train"]):
+        return "access.transport"
+    elif any(word in question_lower for word in ["photo", "picture", "instagram", "selfie"]):
+        return "culture.photography"
+    elif any(word in question_lower for word in ["history", "historical", "past", "origin"]):
+        return "origin.general"
+    elif any(word in question_lower for word in ["name", "called", "title"]):
+        return "origin.name"
+    elif any(word in question_lower for word in ["symbol", "meaning", "significance"]):
+        return "culture.symbolism"
+    elif any(word in question_lower for word in ["story", "legend", "myth", "tale"]):
+        return "myths.legends"
+    else:
+        # Default to a general category based on landmark type
+        landmark_type = get_landmark_type(landmark_id)
+        return f"{landmark_type}.general"
+
+def get_prompt_for_semantic_key(landmark_id: str, semantic_key: str, question_text: str) -> str:
+    """Get a prompt template for the new semantic key"""
+    landmark_type = get_landmark_type(landmark_id)
+    
+    # Simple prompt templates based on semantic key
+    prompts = {
+        "recreation.nearby": "As Roamly, your personal AI tour guide, suggest nearby recreational spots around {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Focus on places within walking distance that offer good exercise opportunities.",
+        "dining.nearby": "As Roamly, your personal AI tour guide, recommend nearby dining options around {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Suggest local favorites and convenient spots.",
+        "access.parking": "As Roamly, your personal AI tour guide, provide parking information for {landmark} for a {age_group} traveler from {userCountry}. Include parking options, costs, and tips.",
+        "access.transport": "As Roamly, your personal AI tour guide, explain transportation options to reach {landmark} for a {age_group} traveler from {userCountry}. Include public transit, walking routes, and accessibility information.",
+        "culture.photography": "As Roamly, your personal AI tour guide, suggest the best photo spots and angles at {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Include timing tips and unique perspectives.",
+        "origin.general": "As Roamly, your personal AI tour guide, share the fascinating history and origin story of {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Make it engaging and memorable.",
+        "origin.name": "As Roamly, your personal AI tour guide, explain the meaning and origin of {landmark}'s name for a {age_group} traveler from {userCountry}. Provide cultural and historical context.",
+        "culture.symbolism": "As Roamly, your personal AI tour guide, explain the symbolism and cultural significance of {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Highlight meaningful design elements.",
+        "myths.legends": "As Roamly, your personal AI tour guide, share an engaging myth, legend, or fascinating story connected to {landmark} for a {age_group} traveler from {userCountry}. Make it captivating and memorable."
+    }
+    
+    return prompts.get(semantic_key, f"As Roamly, your personal AI tour guide, provide helpful information about {landmark_id.replace('_', ' ')} for a {{age_group}} traveler from {{userCountry}} interested in {{mappedCategory}}.")
+
+async def update_semantic_config(landmark_id: str, semantic_key: str, question_text: str) -> bool:
+    """Update semantic_config.json in S3 with new semantic key"""
+    try:
+        print(f"📝 Updating semantic_config.json in S3 with new key: {semantic_key}")
+        
+        # 1. Get landmark type
+        landmark_type = get_landmark_type(landmark_id)
+        print(f"📝 Landmark type: {landmark_type}")
+        
+        # 2. Read current semantic_config.json from S3 (correct path: config/semantic_config.json)
+        s3_config_key = "config/semantic_config.json"  # FIXED: Use config/ folder
+        try:
+            s3_response = s3_client.get_object(Bucket=S3_BUCKET, Key=s3_config_key)
+            config_data = json.loads(s3_response['Body'].read().decode('utf-8'))
+            print(f"✅ Read semantic_config.json from S3: {s3_config_key}")
+        except Exception as e:
+            print(f"⚠️ Failed to read from S3, trying local file: {e}")
+            # Fallback to local file
+            try:
+                with open("scripts/semantic_config.json", "r") as f:
+                    config_data = json.load(f)
+                print(f"✅ Read semantic_config.json from local file")
+            except Exception as e2:
+                print(f"❌ Failed to read semantic_config.json: {e2}")
+                return False
+        
+        # 3. Add new semantic key to the appropriate landmark type
+        if landmark_type not in config_data:
+            config_data[landmark_type] = {}
+        
+        # 4. Create prompt template for the new semantic key
+        prompt_template = get_prompt_for_semantic_key(landmark_id, semantic_key, question_text)
+        
+        # 5. Add the new semantic key with its prompt
+        config_data[landmark_type][semantic_key] = prompt_template
+        
+        print(f"✅ Added new semantic key '{semantic_key}' to '{landmark_type}' section")
+        
+        # 6. Upload updated config back to S3 (correct path: config/semantic_config.json)
+        config_content = json.dumps(config_data, indent=2)
+        s3_client.put_object(
+            Bucket=S3_BUCKET,
+            Key=s3_config_key,  # FIXED: Use config/ folder
+            Body=config_content,
+            ContentType="application/json"
+        )
+        
+        print(f"✅ Updated semantic_config.json in S3: {s3_config_key}")
+        print(f"✅ Added prompt template for: {semantic_key}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error updating semantic config: {e}")
+        return False
+
 async def ask_landmark_question(
     landmark: str = Form(...),
     question: str = Form(None),
@@ -40,13 +145,20 @@ async def ask_landmark_question(
     interestOne: str = Form("Nature"),
     userId: str = Form(...),
     sessionId: str = Form(None),
-    audio_file: UploadFile = File(None)
+    audio_file: UploadFile = File(None),
+    age: str = Form("25")  # Change to str and convert later
 ):
     """
     Handle landmark questions - always try specific answers first, then LLM fallback
     """
     try:
-        print(f"🎯 Processing ask-landmark request: {landmark}, {userId}")
+        # Convert age to integer with better error handling
+        try:
+            age_int = int(age) if age else 25
+        except (ValueError, TypeError):
+            age_int = 25  # Default if conversion fails
+        
+        print(f"🎯 Processing ask-landmark request: {landmark}, {userId}, age: {age_int}")
         
         # 1. Pre-process inputs
         landmark_id = landmark.replace(" ", "_")
@@ -86,9 +198,10 @@ async def ask_landmark_question(
                 landmark_id, semantic_key, question_text, userCountry, interestOne
             )
         else:
-            # 5. Handle unsuccessful semantic key mapping (LLM fallback)
-            return await handle_llm_fallback(
-                landmark_id, question_text, userCountry, interestOne
+            # 5. ✅ NEW: Try dynamic semantic key creation with age
+            print("🔧 No semantic key found, attempting dynamic creation...")
+            return await handle_dynamic_semantic_creation(
+                landmark_id, question_text, userCountry, interestOne, age_int  # Pass the converted integer
             )
             
     except Exception as e:
@@ -454,6 +567,160 @@ async def update_json_with_qa_and_facts(
         
     except Exception as e:
         print(f"Error updating JSON: {e}")
+
+async def handle_dynamic_semantic_creation(
+    landmark_id: str, question_text: str, userCountry: str, interestOne: str, age: int
+):
+    """Handle dynamic semantic key creation when no existing key matches"""
+    try:
+        print(" Attempting dynamic semantic key creation...")
+        
+        # 1. Get age group using existing utility
+        from utils.age_utils import AgeUtils
+        age_group = AgeUtils.classify_age(age)
+        print(f" User age: {age} -> Age group: {age_group}")
+        
+        # 2. Create new semantic key based on the question
+        new_semantic_key = create_semantic_key_from_question(question_text, landmark_id)
+        
+        if not new_semantic_key:
+            print("❌ Failed to create semantic key, using general LLM fallback")
+            return await handle_llm_fallback(
+                landmark_id, question_text, userCountry, interestOne
+            )
+        
+        print(f"✅ Created new semantic key: {new_semantic_key}")
+        
+        # 3. Update semantic_config.json with new key and prompt
+        success = await update_semantic_config(landmark_id, new_semantic_key, question_text)
+        
+        if not success:
+            print("❌ Failed to update semantic config, using general LLM fallback")
+            return await handle_llm_fallback(
+                landmark_id, question_text, userCountry, interestOne
+            )
+        
+        print(f"✅ Updated semantic_config.json with new key: {new_semantic_key}")
+        
+        # 4. Generate response using the new semantic key with age
+        return await handle_new_semantic_key(
+            landmark_id, new_semantic_key, question_text, userCountry, interestOne, age_group
+        )
+        
+    except Exception as e:
+        print(f"Error in handle_dynamic_semantic_creation: {e}")
+        return await handle_llm_fallback(
+            landmark_id, question_text, userCountry, interestOne
+        )
+
+async def handle_new_semantic_key(
+    landmark_id: str, semantic_key: str, question_text: str, 
+    userCountry: str, interestOne: str, age_group: str
+):
+    """Handle newly created semantic key - generate response and create JSON file"""
+    try:
+        print(f"🎯 Generating response for new semantic key: {semantic_key}")
+        
+        # 1. Get the prompt for this new semantic key
+        prompt_template = get_prompt_for_semantic_key(landmark_id, semantic_key, question_text)
+        
+        if not prompt_template:
+            print("❌ Failed to get prompt for new semantic key")
+            return await handle_llm_fallback(
+                landmark_id, question_text, userCountry, interestOne
+            )
+        
+        # 2. Format the prompt with user information
+        prompt = prompt_template.format(
+            landmark=landmark_id.replace("_", " "),
+            age_group=age_group,
+            userCountry=userCountry,
+            mappedCategory=interestOne
+        )
+        
+        # 3. Generate response using LLM with the new prompt
+        answer = await llm_service.generate_response_with_prompt_and_age(
+            prompt=prompt,
+            question=question_text,
+            landmark_id=landmark_id,
+            user_country=userCountry,
+            interest=interestOne,
+            age_group=age_group
+        )
+        
+        # 4. Extract facts from the response
+        extracted_facts = await extract_facts_from_response(question_text, answer)
+        
+        # 5. Create new JSON file for this semantic key (following batch script pattern)
+        json_data = {
+            "landmark": landmark_id.replace("_", " "),
+            "semantic_key": semantic_key,
+            "responses": [
+                {
+                    "user_country": userCountry,
+                    "user_age": age_group,
+                    "mapped_category": interestOne,
+                    "response": answer
+                }
+            ],
+            "extracted_details": extracted_facts,
+            "specific_Youtubes": {
+                question_text: answer  # Add the current Q&A pair
+            },
+            "last_updated_utc": datetime.utcnow().isoformat() + "Z"
+        }
+        
+        # 6. Upload to S3
+        s3_key = f"semantic_responses/{landmark_id.lower()}_{semantic_key}.json"
+        
+        json_content = json.dumps(json_data, indent=2)
+        s3_client.put_object(
+            Bucket=S3_BUCKET,
+            Key=s3_key,
+            Body=json_content,
+            ContentType="application/json"
+        )
+        
+        # 7. Update DynamoDB to point to the new JSON file
+        json_url = f"{S3_URL_BASE}/{s3_key}"
+        
+        semantic_table.put_item(Item={
+            "landmark_id": landmark_id,
+            "semantic_key": semantic_key,
+            "json_url": json_url,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "is_dynamic": True  # Flag to indicate this was created dynamically
+        })
+        
+        print(f"✅ Created new JSON file: {s3_key}")
+        print(f"✅ Updated DynamoDB with new semantic key: {semantic_key}")
+        print(f"✅ Added Q&A pair: '{question_text}'")
+        print(f"✅ Added {len(extracted_facts)} extracted facts")
+        print(f"⚠️ NOTE: Run batch script later to populate all age groups and countries for this semantic key")
+        
+        # 8. Return the response
+        return {
+            "status": "success",
+            "message": "Generated response using new semantic key",
+            "data": {
+                "answer": answer,
+                "source": "dynamic_semantic_generated"
+            },
+            "debug": {
+                "semanticKeyUsed": semantic_key,
+                "retrievalPath": "dynamic_semantic_creation",
+                "factsExtracted": len(extracted_facts),
+                "newJsonFile": s3_key,
+                "ageGroup": age_group,
+                "needsBatchUpdate": True  # Flag to run batch script later
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error in handle_new_semantic_key: {e}")
+        return await handle_llm_fallback(
+            landmark_id, question_text, userCountry, interestOne
+        )
 
 def get_landmark_type(landmark_id: str) -> str:
     """Get landmark type for context"""

@@ -74,16 +74,19 @@ def create_semantic_responses_table_if_not_exists():
             print(f"❌ Error checking/creating table: {e}")
             raise e
 
-# === Load semantic config ===
-with open("semantic_config.json", "r") as f:
-    semantic_config = json.load(f)
-
-def get_relevant_keys(landmark_type):
-    return semantic_config.get(landmark_type, ["origin.general", "media.references"])
-
-# === Data Inputs ===
-with open("landmarks.json", "r") as f:
-    landmark_objs = json.load(f)
+# === Load semantic config and landmarks from S3 ===
+try:
+    from utils.s3_config_reader import get_semantic_config_from_s3, get_landmarks_from_s3
+    print("📥 Loading configuration from S3...")
+    semantic_config = get_semantic_config_from_s3()
+    landmark_objs = get_landmarks_from_s3()
+    print("✅ Configuration loaded from S3")
+except Exception as e:
+    print(f"⚠️ S3 config reader not available or failed ({e}), falling back to local files...")
+    with open("semantic_config.json", "r") as f:
+        semantic_config = json.load(f)
+    with open("landmarks.json", "r") as f:
+        landmark_objs = json.load(f)
 
 # Simplified categories - no more interest mapping needed
 categories = [

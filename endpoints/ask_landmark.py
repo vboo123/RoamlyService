@@ -33,9 +33,6 @@ s3_client = boto3.client(
 S3_BUCKET = os.getenv("S3_BUCKET_NAME")
 S3_URL_BASE = os.getenv("S3_URL_BASE")
 
-# === Session Store (In-Memory for MVP) ===
-session_store = {}
-
 async def ask_landmark_question(
     landmark: str = Form(...),
     question: str = Form(None),
@@ -46,16 +43,13 @@ async def ask_landmark_question(
     audio_file: UploadFile = File(None)
 ):
     """
-    Handle follow-up questions with session management and intelligent response routing
+    Handle landmark questions - always try specific answers first, then LLM fallback
     """
     try:
-        print(f"🎯 Processing ask-landmark request: {landmark}, {userId}, {sessionId}")
+        print(f"🎯 Processing ask-landmark request: {landmark}, {userId}")
         
         # 1. Pre-process inputs
         landmark_id = landmark.replace(" ", "_")
-        
-        # ✅ FIX: Create stable session key that doesn't change on server restart
-        stable_session_key = f"{userId}:{landmark_id}"
         
         # Normalize country mapping
         country_map = {
@@ -79,10 +73,7 @@ async def ask_landmark_question(
         else:
             raise HTTPException(status_code=400, detail="Either question or audio_file must be provided")
         
-        # 3. Session management with stable key
-        session_data = get_or_initialize_session(stable_session_key, userId, sessionId, landmark_id)
-        
-        # 4. Semantic key mapping
+        # 3. Semantic key mapping
         semantic_key, confidence = semantic_matching_service.get_landmark_specific_semantic_key(
             question_text, landmark_id
         )
@@ -90,51 +81,25 @@ async def ask_landmark_question(
         print(f"🔍 Semantic mapping result: {semantic_key} (confidence: {confidence})")
         
         if semantic_key and confidence > 0.4:  # High confidence threshold
-            # 5. Handle successful semantic key mapping
-            return await handle_successful_semantic_mapping(
-                landmark_id, semantic_key, question_text, userCountry, 
-                interestOne, session_data, stable_session_key
+            # 4. Handle successful semantic key mapping
+            return await handle_semantic_mapping(
+                landmark_id, semantic_key, question_text, userCountry, interestOne
             )
         else:
-            # 6. Handle unsuccessful semantic key mapping (LLM fallback DISABLED)
-            return await handle_llm_fallback_disabled(
-                landmark_id, question_text, userCountry, interestOne, 
-                session_data, stable_session_key
+            # 5. Handle unsuccessful semantic key mapping (LLM fallback)
+            return await handle_llm_fallback(
+                landmark_id, question_text, userCountry, interestOne
             )
             
     except Exception as e:
         print(" ERROR in /ask-landmark:", e)
         raise HTTPException(status_code=500, detail=f"Failed to process question: {str(e)}")
 
-def get_or_initialize_session(session_key: str, userId: str, sessionId: str, landmark_id: str) -> dict:
-    """Get existing session or initialize new one (simplified)"""
-    if session_key in session_store:
-        session_data = session_store[session_key]
-        # Update last activity
-        session_data["lastActivityTime"] = time.time()
-        return session_data
-    else:
-        # Initialize new session
-        new_session_id = sessionId or str(uuid.uuid4())
-        session_data = {
-            "sessionId": new_session_id,
-            "userId": userId,
-            "currentLandmarkId": landmark_id,
-            "semanticKeyInteractionHistory": {},
-            "lastQuestionOverall": None,
-            "lastAnswerOverall": None,
-            "lastSemanticKeyOverall": None,
-            "sessionStartTime": time.time(),
-            "lastActivityTime": time.time()
-        }
-        session_store[session_key] = session_data
-        return session_data
-
-async def handle_successful_semantic_mapping(
+async def handle_semantic_mapping(
     landmark_id: str, semantic_key: str, question_text: str, 
-    userCountry: str, interestOne: str, session_data: dict, session_key: str
+    userCountry: str, interestOne: str
 ):
-    """Handle successful semantic key mapping with intelligent response selection"""
+    """Handle semantic key mapping - always try specific answers first"""
     try:
         print(f"✅ Found semantic key: {semantic_key}")
         
@@ -149,65 +114,94 @@ async def handle_successful_semantic_mapping(
         item = response.get("Item")
         if not item:
             print(f"⚠️ No data found for semantic key: {semantic_key}")
-            return await handle_llm_fallback_disabled(
-                landmark_id, question_text, userCountry, interestOne, 
-                session_data, session_key
+            return await handle_llm_fallback(
+                landmark_id, question_text, userCountry, interestOne
             )
         
-        # Fetch consolidated JSON from S3
-        json_response = requests.get(item["json_url"], timeout=10)
-        json_response.raise_for_status()
-        json_data = json_response.json()
+        # ✅ FIX: Read directly from S3 instead of CloudFront to avoid caching issues
+        original_json_url = item["json_url"]
+        print(f" Fetching JSON from S3: {original_json_url}")
         
-        # ALWAYS try specific answers first, regardless of session state
+        # Extract S3 key from CloudFront URL
+        url_path = original_json_url.split('.net/')[-1]
+        s3_key = url_path
+        
+        # Read directly from S3
+        try:
+            s3_response = s3_client.get_object(Bucket=S3_BUCKET, Key=s3_key)
+            json_data = json.loads(s3_response['Body'].read().decode('utf-8'))
+            print(f"✅ Read directly from S3: {s3_key}")
+        except Exception as e:
+            print(f"⚠️ Failed to read from S3, falling back to CloudFront: {e}")
+            # Fallback to CloudFront
+            json_response = requests.get(original_json_url, timeout=10)
+            json_response.raise_for_status()
+            json_data = json_response.json()
+        
+        # Debug: Print the actual JSON content being read
+        print(f"🔍 JSON data keys: {list(json_data.keys())}")
+        print(f" JSON data content: {json.dumps(json_data, indent=2)[:500]}...")
+        
+        # ALWAYS try specific answers first
         print("🔍 Always trying specific answers first")
-        return await handle_subsequent_session(
-            json_data, question_text, userCountry, interestOne,
-            session_data, session_key, semantic_key
+        return await try_specific_answers(
+            json_data, question_text, userCountry, interestOne, semantic_key, landmark_id, original_json_url
         )
             
     except Exception as e:
-        print(f"Error in handle_successful_semantic_mapping: {e}")
-        return await handle_llm_fallback_disabled(
-            landmark_id, question_text, userCountry, interestOne, 
-            session_data, session_key
+        print(f"Error in handle_semantic_mapping: {e}")
+        return await handle_llm_fallback(
+            landmark_id, question_text, userCountry, interestOne
         )
 
-
-
-async def handle_subsequent_session(
+async def try_specific_answers(
     json_data: dict, question_text: str, userCountry: str, interestOne: str,
-    session_data: dict, session_key: str, semantic_key: str
+    semantic_key: str, landmark_id: str, original_json_url: str
 ):
-    """Handle subsequent sessions - always try specific answers first"""
+    """Try to find specific answers in the JSON data"""
     try:
         specific_youtubes = json_data.get("specific_Youtubes", {})
         extracted_details = json_data.get("extracted_details", {})
         normalized_question = question_text.lower().strip()
         
         print(f"🔍 Looking for specific answer in {len(specific_youtubes)} YouTube-style responses")
+        print(f"🔍 Looking for extracted details in {len(extracted_details)} details")
+        
+        # Debug: Print the actual keys we're searching
+        print(f"🔍 Specific YouTube keys: {list(specific_youtubes.keys())}")
+        print(f"🔍 Extracted detail keys: {list(extracted_details.keys())}")
         
         # 1. Try exact keyword matching in specific_Youtubes
         for key, value in specific_youtubes.items():
-            if any(word in normalized_question for word in key.lower().split()):
+            print(f"🔍 Comparing: '{normalized_question}' with stored key: '{key}'")
+            if normalized_question == key.lower():
+                # Exact match
                 print(f"✅ Found exact keyword match: {key}")
-                answer = value
-                source = "database_qa"
-                
-                # Update session
-                update_session_data(session_data, semantic_key, question_text, answer, source)
-                session_store[session_key] = session_data
-                
                 return {
                     "status": "success",
                     "message": "Retrieved specific answer from database",
                     "data": {
-                        "answer": answer,
-                        "source": source
+                        "answer": value,
+                        "source": "database_qa"
                     },
                     "debug": {
                         "semanticKeyUsed": semantic_key,
                         "retrievalPath": "exact_qa_match"
+                    }
+                }
+            elif any(word in key.lower() for word in normalized_question.split()):
+                # Contains match
+                print(f"✅ Found contains keyword match: {key}")
+                return {
+                    "status": "success",
+                    "message": "Retrieved specific answer from database",
+                    "data": {
+                        "answer": value,
+                        "source": "database_qa"
+                    },
+                    "debug": {
+                        "semanticKeyUsed": semantic_key,
+                        "retrievalPath": "contains_qa_match"
                     }
                 }
         
@@ -216,10 +210,6 @@ async def handle_subsequent_session(
         if similar_qa and similarity > 0.6:
             qa_question, qa_answer = similar_qa
             print(f"✅ Found semantically similar Q&A: {qa_question} (similarity: {similarity})")
-            
-            # Update session
-            update_session_data(session_data, semantic_key, question_text, qa_answer, "database_qa_semantic_match")
-            session_store[session_key] = session_data
             
             return {
                 "status": "success",
@@ -237,23 +227,15 @@ async def handle_subsequent_session(
             }
         
         # 3. Try extracted_details lookup
-        print(f"🔍 Looking for extracted detail in {len(extracted_details)} details")
         for key, value in extracted_details.items():
             if any(word in normalized_question for word in key.lower().split()):
                 print(f"✅ Found extracted detail: {key}")
-                answer = value
-                source = "database_extracted"
-                
-                # Update session
-                update_session_data(session_data, semantic_key, question_text, answer, source)
-                session_store[session_key] = session_data
-                
                 return {
                     "status": "success",
                     "message": "Retrieved extracted detail from database",
                     "data": {
-                        "answer": answer,
-                        "source": source
+                        "answer": value,
+                        "source": "database_extracted"
                     },
                     "debug": {
                         "semanticKeyUsed": semantic_key,
@@ -263,16 +245,14 @@ async def handle_subsequent_session(
         
         # 4. If no specific answer found, use LLM with fact extraction
         print(" No specific answer found, using LLM fallback with fact extraction")
-        return await handle_llm_specific_detail_with_facts(
-            json_data, question_text, userCountry, interestOne,
-            session_data, session_key, semantic_key
+        return await handle_llm_with_facts(
+            json_data, question_text, userCountry, interestOne, semantic_key, landmark_id, original_json_url
         )
         
     except Exception as e:
-        print(f"Error in handle_subsequent_session: {e}")
-        return await handle_llm_fallback_disabled(
-            json_data.get("landmark", ""), question_text, userCountry, interestOne, 
-            session_data, session_key
+        print(f"Error in try_specific_answers: {e}")
+        return await handle_llm_fallback(
+            landmark_id, question_text, userCountry, interestOne
         )
 
 async def find_similar_qa_pair(question_text: str, specific_youtubes: dict) -> tuple:
@@ -297,11 +277,11 @@ async def find_similar_qa_pair(question_text: str, specific_youtubes: dict) -> t
         print(f"Error finding similar Q&A pair: {e}")
         return None, 0
 
-async def handle_llm_specific_detail_with_facts(
+async def handle_llm_with_facts(
     json_data: dict, question_text: str, userCountry: str, interestOne: str,
-    session_data: dict, session_key: str, semantic_key: str
+    semantic_key: str, landmark_id: str, original_json_url: str
 ):
-    """Handle LLM fallback for specific detail requests with fact extraction"""
+    """Handle LLM fallback with fact extraction"""
     try:
         print("🤖 Using LLM for specific detail generation with fact extraction")
         
@@ -311,7 +291,7 @@ async def handle_llm_specific_detail_with_facts(
         # Generate specific detail using LLM
         answer = await llm_service.generate_response(
             question=question_text,
-            landmark_id=json_data.get("landmark", "").replace(" ", "_"),
+            landmark_id=landmark_id,
             landmark_type=landmark_type,
             user_country=userCountry,
             interest=interestOne
@@ -324,218 +304,165 @@ async def handle_llm_specific_detail_with_facts(
         
         # Update JSON file with new Q&A pair AND extracted facts
         await update_json_with_qa_and_facts(
-            json_data, question_text, answer, extracted_facts, semantic_key, 
-            json_data.get("landmark", "").replace(" ", "_")
+            json_data, question_text, answer, extracted_facts, 
+            semantic_key, landmark_id, original_json_url
         )
-        
-        # Update session
-        update_session_data(session_data, semantic_key, question_text, answer, source)
-        session_store[session_key] = session_data
         
         return {
             "status": "success",
-            "message": "Generated specific detail via LLM and updated database with facts",
+            "message": "Generated new answer using LLM",
             "data": {
                 "answer": answer,
                 "source": source
             },
             "debug": {
                 "semanticKeyUsed": semantic_key,
-                "interactionCount": session_data["semanticKeyInteractionHistory"].get(semantic_key, {}).get("interactionCount", 0),
-                "retrievalPath": "llm_specific_detail_with_facts",
-                "jsonUpdated": True,
-                "factsExtracted": len(extracted_facts) if extracted_facts else 0
+                "retrievalPath": "llm_generated",
+                "factsExtracted": len(extracted_facts)
             }
         }
         
     except Exception as e:
-        print(f"Error in handle_llm_specific_detail_with_facts: {e}")
-        return await handle_llm_fallback_disabled(
-            json_data.get("landmark", ""), question_text, userCountry, interestOne, 
-            session_data, session_key
+        print(f"Error in handle_llm_with_facts: {e}")
+        return await handle_llm_fallback(
+            landmark_id, question_text, userCountry, interestOne
         )
 
-async def extract_facts_from_response(question: str, answer: str) -> dict:
-    """Extract specific facts from LLM response"""
+async def handle_llm_fallback(
+    landmark_id: str, question_text: str, userCountry: str, interestOne: str
+):
+    """Handle LLM fallback when semantic mapping fails"""
     try:
-        prompt = f"""
-        From this answer: "{answer}"
+        print("�� Using LLM fallback for general question")
         
-        Extract specific factual details that could be useful for future questions.
-        Return as JSON with keys like: year_built, architect, style, height, materials, etc.
+        # Get landmark type for context
+        landmark_type = get_landmark_type(landmark_id)
         
-        Example: {{"year_built": "1923", "architect": "John Smith", "style": "Byzantine"}}
-        
-        Only return the JSON, nothing else.
-        """
-        
-        response = await llm_service.generate_response(
-            question=prompt,
-            landmark_id="fact_extraction",
-            landmark_type="utility",
-            user_country="United States",
-            interest="Technology"
+        # Generate response using LLM
+        answer = await llm_service.generate_response(
+            question=question_text,
+            landmark_id=landmark_id,
+            landmark_type=landmark_type,
+            user_country=userCountry,
+            interest=interestOne
         )
         
-        # Parse the JSON response
+        return {
+            "status": "success",
+            "message": "Generated answer using LLM fallback",
+            "data": {
+                "answer": answer,
+                "source": "llm_fallback"
+            },
+            "debug": {
+                "semanticKeyUsed": None,
+                "retrievalPath": "llm_fallback"
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error in handle_llm_fallback: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate response: {str(e)}")
+
+async def extract_facts_from_response(question: str, answer: str) -> dict:
+    """Extract facts from LLM response"""
+    try:
+        # Use LLM to extract facts from the answer
+        fact_extraction_prompt = f"""
+        Extract key facts from this answer about the landmark. Return only the facts as a JSON object with descriptive keys.
+        
+        Question: {question}
+        Answer: {answer}
+        
+        Return format: {{"fact1": "description", "fact2": "description"}}
+        """
+        
+        facts_response = await llm_service.generate_response(
+            question=fact_extraction_prompt,
+            landmark_id="fact_extraction",
+            landmark_type="general",
+            user_country="United States",
+            interest="general"
+        )
+        
+        # Try to parse JSON from response
         try:
-            facts = json.loads(response)
-            print(f" Extracted facts: {facts}")
-            return facts
-        except:
-            print(f"⚠️ Failed to parse extracted facts: {response}")
-            return {}
-            
+            # Extract JSON from the response
+            start_idx = facts_response.find('{')
+            end_idx = facts_response.rfind('}') + 1
+            if start_idx != -1 and end_idx > start_idx:
+                json_str = facts_response[start_idx:end_idx]
+                extracted_facts = json.loads(json_str)
+            else:
+                # Fallback: create simple fact
+                extracted_facts = {"general_info": answer[:100] + "..."}
+        except json.JSONDecodeError:
+            # Fallback: create simple fact
+            extracted_facts = {"general_info": answer[:100] + "..."}
+        
+        return extracted_facts
+        
     except Exception as e:
         print(f"Error extracting facts: {e}")
-        return {}
+        return {"general_info": answer[:100] + "..."}
 
 async def update_json_with_qa_and_facts(
     json_data: dict, question_text: str, answer: str, extracted_facts: dict, 
-    semantic_key: str, landmark_id: str
+    semantic_key: str, landmark_id: str, original_json_url: str
 ):
-    """Update existing JSON file with new Q&A pair AND extracted facts"""
+    """Update JSON file with new Q&A pair and extracted facts"""
     try:
-        # Add to specific_Youtubes
-        normalized_question = question_text.lower().strip()
-        json_data["specific_Youtubes"][normalized_question] = answer
+        # Add new Q&A pair to specific_Youtubes
+        if "specific_Youtubes" not in json_data:
+            json_data["specific_Youtubes"] = {}
         
-        # Add extracted facts to extracted_details
-        if extracted_facts:
-            for key, value in extracted_facts.items():
-                if key not in json_data["extracted_details"]:
-                    json_data["extracted_details"][key] = value
+        json_data["specific_Youtubes"][question_text] = answer
+        
+        # Merge extracted facts with existing ones
+        if "extracted_details" not in json_data:
+            json_data["extracted_details"] = {}
+        
+        json_data["extracted_details"].update(extracted_facts)
         
         # Update timestamp
         json_data["last_updated_utc"] = datetime.utcnow().isoformat() + "Z"
         
-        # Get the S3 URL from DynamoDB
-        response = semantic_table.get_item(
-            Key={
-                "landmark_id": landmark_id,
-                "semantic_key": semantic_key
-            }
+        # ✅ FIX: Extract S3 key from the original CloudFront URL
+        # Parse the URL to get the S3 key
+        # Example: https://dmaq21q34jfdq.cloudfront.net/semantic_responses/saint_anne_byzantine_catholic_church_architecture.style.json
+        # We need to extract: semantic_responses/saint_anne_byzantine_catholic_church_architecture.style.json
+        
+        # Remove the CloudFront domain and get the path
+        url_path = original_json_url.split('.net/')[-1]
+        s3_key = url_path
+        
+        # Convert to JSON string
+        json_content = json.dumps(json_data, indent=2)
+        
+        # Upload to S3 using the same key as the original URL
+        s3_client.put_object(
+            Bucket=S3_BUCKET,
+            Key=s3_key,
+            Body=json_content,
+            ContentType="application/json"
         )
         
-        item = response.get("Item")
-        if not item:
-            print(f"⚠️ No DynamoDB item found for {landmark_id}:{semantic_key}")
-            return
-        
-        # Extract S3 key from URL
-        json_url = item["json_url"]
-        s3_key = json_url.replace(S3_URL_BASE, "")
-        
-        # Upload updated JSON to S3
-        local_path = f"/tmp/updated_{landmark_id}_{semantic_key}.json"
-        with open(local_path, "w") as f:
-            json.dump(json_data, f, indent=2)
-        
-        s3_client.upload_file(
-            local_path,
-            S3_BUCKET,
-            s3_key,
-            ExtraArgs={"ContentType": "application/json"}
-        )
-        
-        # Clean up local file
-        os.remove(local_path)
-        
-        print(f"✅ Updated JSON with new Q&A pair and {len(extracted_facts)} facts for {semantic_key}")
+        print(f"✅ Updated JSON file: {s3_key}")
+        print(f"✅ Writing to same location as original URL: {original_json_url}")
+        print(f"✅ Added Q&A pair: '{question_text}'")
+        print(f"✅ Added {len(extracted_facts)} extracted facts")
         
     except Exception as e:
-        print(f"Error updating JSON with Q&A and facts: {e}")
-        # Don't raise - this is not critical for the response
-
-async def handle_llm_fallback_disabled(
-    landmark_id: str, question_text: str, userCountry: str, interestOne: str,
-    session_data: dict, session_key: str
-):
-    """Handle LLM fallback for new semantic keys - DISABLED for now"""
-    try:
-        print("🤖 LLM fallback for new semantic keys is currently disabled")
-        
-        # Update session with no data response
-        update_session_data(session_data, "unknown", question_text, "No data available", "no_data_available")
-        session_store[session_key] = session_data
-        
-        return {
-            "status": "success",
-            "message": "No data available for this question. Please try asking something else.",
-            "data": {
-                "answer": "I don't have specific information about that. Please try asking about visiting hours, history, architecture, or general information about this landmark.",
-                "source": "no_data_available"
-            },
-            "debug": {
-                "semanticKeyUsed": "unknown",
-                "interactionCount": 0,
-                "retrievalPath": "no_semantic_key_found",
-                "llmFallbackDisabled": True
-            }
-        }
-        
-    except Exception as e:
-        print(f"Error in handle_llm_fallback_disabled: {e}")
-        raise HTTPException(status_code=500, detail=f"LLM fallback failed: {str(e)}")
+        print(f"Error updating JSON: {e}")
 
 def get_landmark_type(landmark_id: str) -> str:
-    """Get landmark type from landmarks table or default"""
-    try:
-        # Query landmarks table to get type
-        landmarks_table = dynamodb.Table("Landmarks")
-        response = landmarks_table.get_item(Key={"landmark_id": landmark_id})
-        item = response.get("Item")
-        return item.get("type", "unknown") if item else "unknown"
-    except Exception as e:
-        print(f"Error getting landmark type: {e}")
-        return "unknown"
-
-def find_best_response(responses: list, userCountry: str, interestOne: str) -> str:
-    """Find the best matching response from the responses array"""
-    if not responses:
-        return None
-    
-    # Try exact match: country + category
-    for resp in responses:
-        if (resp.get("user_country") == userCountry and 
-            resp.get("mapped_category") == interestOne):
-            return resp["response"]
-    
-    # Fallback: try just country match
-    for resp in responses:
-        if resp.get("user_country") == userCountry:
-            return resp["response"]
-    
-    # Final fallback: use first available response
-    return responses[0]["response"] if responses else None
-
-def update_session_data(session_data: dict, semantic_key: str, question_text: str, answer: str, source: str):
-    """Update session data with current interaction"""
-    current_time = time.time()
-    
-    # Initialize session if needed
-    if session_data.get("sessionStartTime") is None:
-        session_data["sessionStartTime"] = current_time
-    
-    # Update interaction history for this semantic key
-    if semantic_key not in session_data["semanticKeyInteractionHistory"]:
-        session_data["semanticKeyInteractionHistory"][semantic_key] = {
-            "lastAccessTime": current_time,
-            "interactionCount": 0,
-            "lastQuestion": None,
-            "lastAnswerType": None
-        }
-    
-    history = session_data["semanticKeyInteractionHistory"][semantic_key]
-    history["lastAccessTime"] = current_time
-    history["interactionCount"] += 1
-    history["lastQuestion"] = question_text
-    history["lastAnswerType"] = source
-    
-    # Update overall session data
-    session_data["lastActivityTime"] = current_time
-    session_data["lastQuestionOverall"] = question_text
-    session_data["lastAnswerOverall"] = answer
-    session_data["lastSemanticKeyOverall"] = semantic_key
-    
-    print(f"📊 Updated session data for {semantic_key}, interaction count: {history['interactionCount']}") 
+    """Get landmark type for context"""
+    # Simple mapping - can be enhanced
+    if "church" in landmark_id.lower():
+        return "religious"
+    elif "park" in landmark_id.lower():
+        return "recreational"
+    elif "museum" in landmark_id.lower():
+        return "cultural"
+    else:
+        return "general" 

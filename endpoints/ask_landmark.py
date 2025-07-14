@@ -63,25 +63,6 @@ def create_semantic_key_from_question(question_text: str, landmark_id: str) -> s
         landmark_type = get_landmark_type(landmark_id)
         return f"{landmark_type}.general"
 
-def get_prompt_for_semantic_key(landmark_id: str, semantic_key: str, question_text: str) -> str:
-    """Get a prompt template for the new semantic key"""
-    landmark_type = get_landmark_type(landmark_id)
-    
-    # Simple prompt templates based on semantic key
-    prompts = {
-        "recreation.nearby": "As Roamly, your personal AI tour guide, suggest nearby recreational spots around {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Focus on places within walking distance that offer good exercise opportunities.",
-        "dining.nearby": "As Roamly, your personal AI tour guide, recommend nearby dining options around {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Suggest local favorites and convenient spots.",
-        "access.parking": "As Roamly, your personal AI tour guide, provide parking information for {landmark} for a {age_group} traveler from {userCountry}. Include parking options, costs, and tips.",
-        "access.transport": "As Roamly, your personal AI tour guide, explain transportation options to reach {landmark} for a {age_group} traveler from {userCountry}. Include public transit, walking routes, and accessibility information.",
-        "culture.photography": "As Roamly, your personal AI tour guide, suggest the best photo spots and angles at {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Include timing tips and unique perspectives.",
-        "origin.general": "As Roamly, your personal AI tour guide, share the fascinating history and origin story of {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Make it engaging and memorable.",
-        "origin.name": "As Roamly, your personal AI tour guide, explain the meaning and origin of {landmark}'s name for a {age_group} traveler from {userCountry}. Provide cultural and historical context.",
-        "culture.symbolism": "As Roamly, your personal AI tour guide, explain the symbolism and cultural significance of {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Highlight meaningful design elements.",
-        "myths.legends": "As Roamly, your personal AI tour guide, share an engaging myth, legend, or fascinating story connected to {landmark} for a {age_group} traveler from {userCountry}. Make it captivating and memorable."
-    }
-    
-    return prompts.get(semantic_key, f"As Roamly, your personal AI tour guide, provide helpful information about {landmark_id.replace('_', ' ')} for a {{age_group}} traveler from {{userCountry}} interested in {{mappedCategory}}.")
-
 async def update_semantic_config(landmark_id: str, semantic_key: str, question_text: str) -> bool:
     """Update semantic_config.json in S3 with new semantic key"""
     try:
@@ -91,15 +72,14 @@ async def update_semantic_config(landmark_id: str, semantic_key: str, question_t
         landmark_type = get_landmark_type(landmark_id)
         print(f"📝 Landmark type: {landmark_type}")
         
-        # 2. Read current semantic_config.json from S3 (correct path: config/semantic_config.json)
-        s3_config_key = "config/semantic_config.json"  # FIXED: Use config/ folder
+        # 2. Read current semantic_config.json from S3
+        s3_config_key = "config/semantic_config.json"
         try:
             s3_response = s3_client.get_object(Bucket=S3_BUCKET, Key=s3_config_key)
             config_data = json.loads(s3_response['Body'].read().decode('utf-8'))
             print(f"✅ Read semantic_config.json from S3: {s3_config_key}")
         except Exception as e:
             print(f"⚠️ Failed to read from S3, trying local file: {e}")
-            # Fallback to local file
             try:
                 with open("scripts/semantic_config.json", "r") as f:
                     config_data = json.load(f)
@@ -112,19 +92,21 @@ async def update_semantic_config(landmark_id: str, semantic_key: str, question_t
         if landmark_type not in config_data:
             config_data[landmark_type] = {}
         
-        # 4. Create prompt template for the new semantic key
-        prompt_template = get_prompt_for_semantic_key(landmark_id, semantic_key, question_text)
+        # 4. Use hybrid approach to create prompt template
+        prompt_template = await get_smart_prompt_for_semantic_key(
+            semantic_key, question_text, config_data
+        )
         
         # 5. Add the new semantic key with its prompt
         config_data[landmark_type][semantic_key] = prompt_template
         
         print(f"✅ Added new semantic key '{semantic_key}' to '{landmark_type}' section")
         
-        # 6. Upload updated config back to S3 (correct path: config/semantic_config.json)
+        # 6. Upload updated config back to S3
         config_content = json.dumps(config_data, indent=2)
         s3_client.put_object(
             Bucket=S3_BUCKET,
-            Key=s3_config_key,  # FIXED: Use config/ folder
+            Key=s3_config_key,
             Body=config_content,
             ContentType="application/json"
         )
@@ -288,7 +270,7 @@ async def try_specific_answers(
         for key, value in specific_youtubes.items():
             print(f"🔍 Comparing: '{normalized_question}' with stored key: '{key}'")
             if normalized_question == key.lower():
-                # Exact match
+                # Exact match only - remove the problematic contains logic
                 print(f"✅ Found exact keyword match: {key}")
                 return {
                     "status": "success",
@@ -300,21 +282,6 @@ async def try_specific_answers(
                     "debug": {
                         "semanticKeyUsed": semantic_key,
                         "retrievalPath": "exact_qa_match"
-                    }
-                }
-            elif any(word in key.lower() for word in normalized_question.split()):
-                # Contains match
-                print(f"✅ Found contains keyword match: {key}")
-                return {
-                    "status": "success",
-                    "message": "Retrieved specific answer from database",
-                    "data": {
-                        "answer": value,
-                        "source": "database_qa"
-                    },
-                    "debug": {
-                        "semanticKeyUsed": semantic_key,
-                        "retrievalPath": "contains_qa_match"
                     }
                 }
         
@@ -398,17 +365,50 @@ async def handle_llm_with_facts(
     try:
         print("🤖 Using LLM for specific detail generation with fact extraction")
         
-        # Get landmark type for context
-        landmark_type = get_landmark_type(json_data.get("landmark", ""))
+        # ✅ NEW: Get landmark info (city/country) from landmarks.json
+        city, country = get_landmark_info(landmark_id)  # Remove async since it's now synchronous
+        print(f" Landmark location: {city}, {country}")
         
-        # Generate specific detail using LLM
-        answer = await llm_service.generate_response(
-            question=question_text,
-            landmark_id=landmark_id,
-            landmark_type=landmark_type,
-            user_country=userCountry,
-            interest=interestOne
-        )
+        # Get landmark type for context
+        landmark_type = get_landmark_type(landmark_id)
+        print(f"🏛️ Landmark type: {landmark_type}")
+        
+        # ✅ NEW: Use semantic config prompt with city/country instead of generic LLM
+        # Get the prompt template for this semantic key
+        prompt_template = get_prompt_template(semantic_key)
+        
+        if prompt_template:
+            print(f"📝 Using semantic config prompt template for: {semantic_key}")
+            # Format the prompt with city/country
+            prompt = prompt_template.format(
+                city=city,
+                country=country,
+                landmark=landmark_id.replace("_", " "),
+                age_group="young",  # Default for now
+                userCountry=userCountry,
+                mappedCategory=interestOne
+            )
+            print(f"🎯 Formatted prompt: {prompt[:200]}...")
+            
+            # Use the formatted prompt with LLM
+            answer = await llm_service.generate_response_with_prompt_and_age(
+                prompt=prompt,
+                question=question_text,
+                landmark_id=landmark_id,
+                user_country=userCountry,
+                interest=interestOne,
+                age_group="young"
+            )
+        else:
+            print(f"⚠️ No prompt template found for {semantic_key}, using generic LLM")
+            # Fallback to generic LLM
+            answer = await llm_service.generate_response(
+                question=question_text,
+                landmark_id=landmark_id,
+                landmark_type=landmark_type,
+                user_country=userCountry,
+                interest=interestOne
+            )
         
         source = "llm_generated_detail"
         
@@ -621,8 +621,12 @@ async def handle_new_semantic_key(
     try:
         print(f"🎯 Generating response for new semantic key: {semantic_key}")
         
+        # ✅ NEW: Get landmark info (city/country) from landmarks table
+        city, country = get_landmark_info(landmark_id)
+        print(f" Landmark location: {city}, {country}")
+        
         # 1. Get the prompt for this new semantic key
-        prompt_template = get_prompt_for_semantic_key(landmark_id, semantic_key, question_text)
+        prompt_template = get_prompt_template(semantic_key)  # Use existing function
         
         if not prompt_template:
             print("❌ Failed to get prompt for new semantic key")
@@ -630,8 +634,10 @@ async def handle_new_semantic_key(
                 landmark_id, question_text, userCountry, interestOne
             )
         
-        # 2. Format the prompt with user information
+        # ✅ FIXED: Format the prompt with city/country
         prompt = prompt_template.format(
+            city=city,                    # ✅ Add city
+            country=country,              # ✅ Add country
             landmark=landmark_id.replace("_", " "),
             age_group=age_group,
             userCountry=userCountry,
@@ -723,13 +729,142 @@ async def handle_new_semantic_key(
         )
 
 def get_landmark_type(landmark_id: str) -> str:
-    """Get landmark type for context"""
-    # Simple mapping - can be enhanced
-    if "church" in landmark_id.lower():
-        return "religious"
-    elif "park" in landmark_id.lower():
-        return "recreational"
-    elif "museum" in landmark_id.lower():
-        return "cultural"
-    else:
-        return "general" 
+    """Get landmark type from landmarks.json"""
+    try:
+        # Read from landmarks.json to get the actual type
+        with open("scripts/landmarks.json", "r") as f:
+            landmarks = json.load(f)
+        
+        # Find the landmark by name
+        landmark_name = landmark_id.replace("_", " ")
+        for landmark in landmarks:
+            if landmark["name"] == landmark_name:
+                print(f"✅ Found landmark type: {landmark['type']} for {landmark_name}")
+                return landmark["type"]  # This will return "religious" for Saint Anne
+        
+        print(f"⚠️ Landmark '{landmark_name}' not found in landmarks.json")
+        return "general"
+    except Exception as e:
+        print(f"⚠️ Error reading landmarks.json: {e}")
+        return "general"
+
+def get_landmark_info(landmark_id: str) -> tuple:
+    """Get landmark city and country from landmarks.json"""
+    try:
+        # Read from landmarks.json to get city/country
+        with open("scripts/landmarks.json", "r") as f:
+            landmarks = json.load(f)
+        
+        # Find the landmark by name
+        landmark_name = landmark_id.replace("_", " ")
+        for landmark in landmarks:
+            if landmark["name"] == landmark_name:
+                city = landmark.get("city", "San Luis Obispo")
+                country = landmark.get("country", "United States")
+                print(f"✅ Found landmark location: {city}, {country} for {landmark_name}")
+                return city, country
+        
+        print(f"⚠️ Landmark '{landmark_name}' not found in landmarks.json")
+        return "San Luis Obispo", "United States"
+    except Exception as e:
+        print(f"⚠️ Error reading landmarks.json: {e}")
+        return "San Luis Obispo", "United States"
+
+async def get_smart_prompt_for_semantic_key(semantic_key: str, question_text: str, existing_config: dict) -> str:
+    """Smart prompt generation using hybrid approach: pattern matching → template → LLM fallback"""
+    
+    print(f"🧠 Generating smart prompt for semantic key: {semantic_key}")
+    
+    # 1. Try pattern matching first (fastest)
+    pattern_prompt = learn_prompt_from_existing(semantic_key, existing_config)
+    if pattern_prompt and "helpful information" not in pattern_prompt:
+        print(f"✅ Used pattern matching: {pattern_prompt[:100]}...")
+        return pattern_prompt
+    
+    # 2. Try template system
+    template_prompt = get_prompt_template(semantic_key)
+    if template_prompt and "helpful information" not in template_prompt:
+        print(f"✅ Used template system: {template_prompt[:100]}...")
+        return template_prompt
+    
+    # 3. Use LLM generation as fallback (most flexible but slower)
+    print(f"🤖 Using LLM generation for: {semantic_key}")
+    return await generate_prompt_from_semantic_key(semantic_key, question_text, existing_config)
+
+def learn_prompt_from_existing(semantic_key: str, existing_config: dict) -> str:
+    """Learn prompt pattern from existing semantic keys"""
+    
+    # Find similar existing keys
+    similar_keys = []
+    for landmark_type, prompts in existing_config.items():
+        for key in prompts.keys():
+            # Check if keys share similar patterns
+            if any(word in key for word in semantic_key.split('.')):
+                similar_keys.append((key, prompts[key]))
+    
+    if similar_keys:
+        # Use the most similar existing prompt as template
+        most_similar_key, most_similar_prompt = similar_keys[0]
+        
+        # Replace the specific topic while keeping the structure
+        new_prompt = most_similar_prompt.replace(
+            most_similar_key.replace('.', ' '),
+            semantic_key.replace('.', ' ')
+        )
+        
+        return new_prompt
+    
+    return None
+
+def get_prompt_template(semantic_key: str) -> str:
+    """Get prompt template for semantic key - UPDATED with city/country"""
+    prompts = {
+        "recreation.nearby": "As Roamly, your personal AI tour guide in {city}, {country}, suggest nearby recreational spots around {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Focus on places within walking distance that offer good exercise opportunities.",
+        "dining.nearby": "As Roamly, your personal AI tour guide in {city}, {country}, recommend nearby dining options around {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Suggest local favorites and convenient spots.",
+        "transportation.nearby": "As Roamly, your personal AI tour guide in {city}, {country}, provide transportation information around {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Include parking, public transit, and accessibility options.",
+        "shopping.nearby": "As Roamly, your personal AI tour guide in {city}, {country}, suggest nearby shopping areas around {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Highlight local markets, boutiques, and souvenir shops.",
+        "history.timeline": "As Roamly, your personal AI tour guide in {city}, {country}, share the historical timeline of {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Focus on key events and milestones in chronological order.",
+        "architecture.details": "As Roamly, your personal AI tour guide in {city}, {country}, describe the architectural details of {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Highlight unique design elements and construction techniques.",
+        "culture.traditions": "As Roamly, your personal AI tour guide in {city}, {country}, explain the cultural traditions associated with {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Share local customs and practices.",
+        "events.current": "As Roamly, your personal AI tour guide in {city}, {country}, inform about current events and activities at {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Include upcoming celebrations and special occasions.",
+        "accessibility.info": "As Roamly, your personal AI tour guide in {city}, {country}, provide accessibility information for {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Include wheelchair access, ramps, and special accommodations.",
+        "photography.tips": "As Roamly, your personal AI tour guide in {city}, {country}, share photography tips for {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}. Suggest best angles, lighting, and unique perspectives."
+    }
+    return prompts.get(semantic_key, "As Roamly, your personal AI tour guide in {city}, {country}, provide helpful information about {landmark} for a {age_group} traveler from {userCountry} interested in {mappedCategory}.")
+
+async def generate_prompt_from_semantic_key(semantic_key: str, question_text: str, existing_config: dict) -> str:
+    """Use LLM to generate a prompt template based on semantic key and existing patterns"""
+    
+    # Get a few examples from existing config
+    example_prompts = []
+    for landmark_type, prompts in existing_config.items():
+        for key, prompt in list(prompts.items())[:3]:  # Get 3 examples
+            example_prompts.append(f"Key: {key}\nPrompt: {prompt}")
+    
+    examples_text = "\n\n".join(example_prompts)
+    
+    llm_prompt = f"""
+    Based on these existing prompt templates, generate a new prompt for semantic key "{semantic_key}".
+    
+    The user asked: "{question_text}"
+    
+    Existing examples:
+    {examples_text}
+    
+    Generate a prompt that follows the same style and format as the examples above.
+    The prompt should be for a tour guide explaining {semantic_key.replace('.', ' ')}.
+    Include placeholders for {{landmark}}, {{age_group}}, {{userCountry}}, and {{mappedCategory}}.
+    
+    New prompt:
+    """
+    
+    # Use LLM to generate the prompt
+    response = await llm_service.generate_response(
+        question=llm_prompt,
+        landmark_id="prompt_generation",
+        landmark_type="system",
+        user_country="system",
+        interest="system"
+    )
+    
+    return response.strip() 

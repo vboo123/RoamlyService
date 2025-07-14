@@ -73,19 +73,23 @@ class LLMService:
                 age_group=age_group
             )
             
-            # Add the user's question to the prompt
-            full_prompt = f"{formatted_prompt}\n\nUser Question: {question}\n\nResponse:"
-            
-            # Use the existing LLM generation logic
-            response = await self.generate_response(
-                question=full_prompt,
-                landmark_id=landmark_id,
-                landmark_type="general",  # For dynamic semantic keys
-                user_country=user_country,
-                interest=interest
-            )
-            
-            return response
+            # ✅ FIX: Use the formatted prompt directly instead of calling generate_response
+            if self.openai_api_key:
+                # Add the user's question to the formatted prompt
+                full_prompt = f"{formatted_prompt}\n\nUser Question: {question}\n\nResponse:"
+                
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a friendly and knowledgeable travel guide."},
+                        {"role": "user", "content": full_prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                return response['choices'][0]['message']['content'].strip()
+            else:
+                return f"I'm sorry, I couldn't generate a response for that question about {landmark_id}. Please try asking something else."
             
         except Exception as e:
             print(f"Error generating response with custom prompt and age: {e}")

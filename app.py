@@ -14,6 +14,7 @@ from services.audio_processing_service import audio_processing_service
 from services.semantic_matching_service import semantic_matching_service
 from typing import List
 from utils.age_utils import AgeUtils
+from endpoints.ask_landmark import ask_landmark_question
 
 # === Load environment variables ===
 load_dotenv()
@@ -254,124 +255,22 @@ class LandmarkQuestion(BaseModel):
 # Remove the old function - now using semantic_matching_service
 
 @app.post("/ask-landmark")
-@app.post("/ask-landmark/")
-async def ask_landmark_question(
+async def ask_landmark_endpoint(
     landmark: str = Form(...),
     question: str = Form(None),
-    userCountry: str = Form("default"),
-    interestOne: str = Form(""),
+    userCountry: str = Form("United States"),
+    interestOne: str = Form("Nature"),
+    userId: str = Form(...),
+    sessionId: str = Form(None),
     audio_file: UploadFile = File(None)
 ):
-    """
-    Handle follow-up questions by:
-    1. Accepting either text question or audio file
-    2. Converting audio to text if provided
-    3. Using semantic matching to find the most relevant semantic key
-    4. Fetching the response using that key
-    5. Falling back to LLM if no static response found
-    """
-    try:
-        # 1. Normalize landmark ID
-        landmark_id = landmark.replace(" ", "_")
-        
-        # 2. Get the question - either from text or convert from audio
-        if audio_file:
-            print(f"🎤 Processing audio file: {audio_file.filename}")
-            
-            # Read audio file
-            audio_content = await audio_file.read()
-            
-            # Get file extension
-            file_extension = audio_file.filename.split(".")[-1] if "." in audio_file.filename else "m4a"
-            
-            # Convert audio to text
-            question_text = await audio_processing_service.audio_to_text(audio_content, file_extension)
-            print(f"🎤 Audio converted to question: '{question_text}'")
-            
-        elif question:
-            question_text = question
-            print(f"📝 Processing text question: '{question_text}'")
-        else:
-            raise HTTPException(status_code=400, detail="Either question or audio_file must be provided")
-        
-        print(f"🎯 Processing question for landmark: {landmark_id}")
-        print(f"❓ Question: {question_text}")
-        
-        # 3. Get semantic key using FAISS-based semantic matching
-        semantic_key, confidence = semantic_matching_service.get_landmark_specific_semantic_key(
-            question_text, 
-            landmark_id
-        )
-        
-        # 4. If we found a semantic key, try to get static response
-        if semantic_key:
-            # Normalize country mapping
-            country_map = {
-                "UnitedStatesofAmerica": "United States",
-                "USA": "United States",
-                "US": "United States"
-            }
-            userCountry = country_map.get(userCountry, userCountry)
-
-            # Compose key dynamically based on semanticKey
-            semantic_country_key = f"{semantic_key}#{userCountry}#{interestOne}"
-            print(f"🔑 Looking for semantic key: {semantic_country_key}")
-
-            # Query the semantic_responses table
-            semantic_table = dynamodb.Table("semantic_responses")
-            response = semantic_table.get_item(
-                Key={
-                    "landmark_id": landmark_id,
-                    "semantic_country_key": semantic_country_key
-                }
-            )
-
-            item = response.get("Item")
-            if item:
-                print(f"✅ Found static response")
-                
-                # Fetch the actual response content from S3
-                try:
-                    json_response = requests.get(item["json_url"], timeout=10)
-                    json_response.raise_for_status()
-                    json_data = json_response.json()
-                    actual_response = json_data.get("response", "")
-                    print(f"📄 Fetched response from S3: {actual_response[:100]}...")
-                    
-                    return {
-                        "landmark": landmark_id,
-                        "question": question_text,
-                        "answer": actual_response,
-                        "semantic_key": semantic_key,
-                        "confidence": float(confidence),
-                        "source": "static",
-                        "json_url": item.get("json_url", "")
-                    }
-                except requests.RequestException as e:
-                    print(f"Failed to fetch response from S3: {e}")
-                    return {
-                        "landmark": landmark_id,
-                        "question": question_text,
-                        "answer": "Response content unavailable",
-                        "semantic_key": semantic_key,
-                        "confidence": float(confidence),
-                        "source": "static",
-                        "json_url": item.get("json_url", "")
-                    }
-            else:
-                print(f"⚠️ No static response found for key: {semantic_country_key}")
-        
-        # 5. Fallback response (for now, just return a message)
-        # TODO: Integrate with LLM service
-        return {
-            "landmark": landmark_id,
-            "question": question_text,
-            "answer": f"I don't have a specific answer for that question about {landmark_id}. This would be a good candidate for LLM generation.",
-            "semantic_key": None,
-            "confidence": None,
-            "source": "llm_fallback"
-        }
-        
-    except Exception as e:
-        print("🔥 ERROR in /ask-landmark:", e)
-        raise HTTPException(status_code=500, detail=f"Failed to process question: {str(e)}")
+    """Wrapper for the ask-landmark functionality"""
+    return await ask_landmark_question(
+        landmark=landmark,
+        question=question,
+        userCountry=userCountry,
+        interestOne=interestOne,
+        userId=userId,
+        sessionId=sessionId,
+        audio_file=audio_file
+    )

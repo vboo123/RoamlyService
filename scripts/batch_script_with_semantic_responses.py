@@ -9,6 +9,9 @@ from geolib import geohash
 import boto3
 import openai
 
+import sys
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+
 # ---- Setup ----
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -74,16 +77,22 @@ def create_semantic_responses_table_if_not_exists():
             print(f"❌ Error checking/creating table: {e}")
             raise e
 
-# === Load semantic config ===
-with open("semantic_config.json", "r") as f:
-    semantic_config = json.load(f)
+# === Load semantic config and landmarks from S3 ===
+try:
+    from utils.s3_config_reader import get_semantic_config_from_s3, get_landmarks_from_s3
+    print("📥 Loading configuration from S3...")
+    semantic_config = get_semantic_config_from_s3()
+    landmark_objs = get_landmarks_from_s3()
+    print("✅ Configuration loaded from S3")
+except Exception as e:
+    print(f"⚠️ S3 config reader not available or failed ({e}), falling back to local files...")
+    with open("semantic_config.json", "r") as f:
+        semantic_config = json.load(f)
+    with open("landmarks.json", "r") as f:
+        landmark_objs = json.load(f)
 
 def get_relevant_keys(landmark_type):
     return semantic_config.get(landmark_type, ["origin.general", "media.references"])
-
-# === Data Inputs ===
-with open("landmarks.json", "r") as f:
-    landmark_objs = json.load(f)
 
 # Simplified categories - no more interest mapping needed
 categories = [
@@ -171,6 +180,9 @@ async def generate_and_store_consolidated_semantics(landmark_obj):
             "last_updated_utc": datetime.utcnow().isoformat() + "Z"
         }
         
+        # Track facts across all responses for this semantic key
+        fact_counters = {}
+        
         # Generate responses for all combinations
         for country in countries:
             for category in categories:
@@ -199,20 +211,57 @@ async def generate_and_store_consolidated_semantics(landmark_obj):
                             temperature=0.7,
                             max_tokens=500
                         )
-                        response = completion['choices'][0]['message']['content'].strip()
+                        full_response = completion['choices'][0]['message']['content'].strip()
                         
-                        # Add to responses array
+                        # Parse response to separate description from facts
+                        description = full_response
+                        facts = {}
+                        
+                        if "FACTS:" in full_response:
+                            try:
+                                description, facts_section = full_response.split("FACTS:", 1)
+                                # Extract JSON from the facts section
+                                facts_text = facts_section.strip()
+                                facts = json.loads(facts_text)
+                                
+                                # Aggregate facts
+                                for fact_key, fact_value in facts.items():
+                                    if fact_key not in fact_counters:
+                                        fact_counters[fact_key] = {}
+                                    if fact_value not in fact_counters[fact_key]:
+                                        fact_counters[fact_key][fact_value] = 0
+                                    fact_counters[fact_key][fact_value] += 1
+                                    
+                            except Exception as e:
+                                print(f"⚠️ Failed to parse facts from response: {e}")
+                                description = full_response
+                        else:
+                            print(f"⚠️ No FACTS section found in response for {semantic_key}")
+                        
+                        # Add to responses array (only the description part)
                         consolidated_data["responses"].append({
                             "user_country": country,
                             "user_age": age_group,
                             "mapped_category": category,  # Use category directly
-                            "response": response
+                            "response": description.strip()
                         })
                         
                         print(f"✅ Generated response for {country}/{category}/{age_group}")
                         
                     except Exception as e:
                         print(f"❌ Failed to generate OpenAI response for {semantic_key}: {e}")
+        
+        # Aggregate the most common facts for this semantic key
+        aggregated_facts = {}
+        for fact_key, value_counts in fact_counters.items():
+            if value_counts:
+                # Get the most common value for this fact
+                most_common_value = max(value_counts.items(), key=lambda x: x[1])[0]
+                aggregated_facts[fact_key] = most_common_value
+        
+        # Add aggregated facts to the consolidated data
+        consolidated_data["extracted_details"] = aggregated_facts
+        print(f"📊 Extracted {len(aggregated_facts)} facts for {semantic_key}")
         
         # Store the consolidated response
         insert_consolidated_semantic_response(landmark, semantic_key, consolidated_data)

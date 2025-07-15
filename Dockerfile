@@ -5,7 +5,8 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y gcc libpq-dev
+RUN apt-get update && apt-get install -y gcc libpq-dev ffmpeg \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy files
 COPY . .

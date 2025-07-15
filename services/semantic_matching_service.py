@@ -156,6 +156,11 @@ class SemanticMatchingService:
         
         print(f"✅ FAISS index built with {len(self.metadata)} semantic examples")
     
+    def calculate_similarity(self, text1, text2):
+        emb1 = self.model.encode(text1)
+        emb2 = self.model.encode(text2)
+        return float(util.cos_sim(emb1, emb2)[0][0])
+
     def get_landmark_specific_semantic_key(self, question: str, landmark_id: str, threshold: float = 0.4):
         """
         Get the best semantic key for a question using FAISS-based semantic matching.

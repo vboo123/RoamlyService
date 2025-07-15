@@ -7,8 +7,9 @@ class LLMService:
     def __init__(self):
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         if self.openai_api_key:
-            openai.api_key = self.openai_api_key
+            self.client = openai.OpenAI(api_key=self.openai_api_key)
         else:
+            self.client = None
             print("⚠️ Warning: OPENAI_API_KEY not found. LLM fallbacks will not work.")
     
     async def generate_response(self, question: str, landmark_id: str, landmark_type: str, user_country: str, interest: str) -> str:
@@ -17,7 +18,7 @@ class LLMService:
         Uses the same configuration as the batch script.
         """
         try:
-            if self.openai_api_key:
+            if self.client:
                 return await self._generate_openai_response(question, landmark_id, landmark_type, user_country, interest)
             else:
                 return f"I'm sorry, I couldn't generate a response for that question about {landmark_id}. Please try asking something else."
@@ -45,7 +46,7 @@ class LLMService:
             """
             
             # Use same configuration as batch script
-            response = openai.ChatCompletion.create(
+            response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "You are a friendly and knowledgeable travel guide."},
@@ -54,7 +55,7 @@ class LLMService:
                 temperature=0.7,
                 max_tokens=500
             )
-            return response['choices'][0]['message']['content'].strip()
+            return response.choices[0].message.content.strip()
         except Exception as e:
             print(f"OpenAI API error: {e}")
             raise
@@ -74,11 +75,11 @@ class LLMService:
             )
             
             # ✅ FIX: Use the formatted prompt directly instead of calling generate_response
-            if self.openai_api_key:
+            if self.client:
                 # Add the user's question to the formatted prompt
                 full_prompt = f"{formatted_prompt}\n\nUser Question: {question}\n\nResponse:"
                 
-                response = openai.ChatCompletion.create(
+                response = self.client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
                         {"role": "system", "content": "You are a friendly and knowledgeable travel guide."},
@@ -87,7 +88,7 @@ class LLMService:
                     temperature=0.7,
                     max_tokens=500
                 )
-                return response['choices'][0]['message']['content'].strip()
+                return response.choices[0].message.content.strip()
             else:
                 return f"I'm sorry, I couldn't generate a response for that question about {landmark_id}. Please try asking something else."
             

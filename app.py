@@ -20,6 +20,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import time
 from datetime import datetime, timedelta
+import jwt
+from jwt import PyJWTError
 
 # === Load environment variables ===
 load_dotenv()
@@ -146,6 +148,38 @@ def validate_registration_data(data: UserRegistration) -> dict:
     
     return errors
 
+JWT_SECRET = os.getenv("JWT_SECRET", "supersecretkey")
+JWT_ALGORITHM = "HS256"
+JWT_EXP_DELTA_SECONDS = 60 * 60 * 24 * 7  # 7 days
+
+def create_jwt_token(user_email: str):
+    payload = {
+        "email": user_email,
+        "exp": datetime.utcnow() + timedelta(seconds=JWT_EXP_DELTA_SECONDS)
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def decode_jwt_token(token: str):
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload
+    except PyJWTError:
+        return None
+
+def get_current_user(request: Request):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = auth_header.split(" ", 1)[1]
+    payload = decode_jwt_token(token)
+    if not payload or "email" not in payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    # Optionally, check if user still exists in DB
+    user = users_table.get_item(Key={"email": payload["email"]}).get("Item")
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
 # === API Endpoints ===
 
 @app.get("/countries/")
@@ -257,22 +291,27 @@ async def register_user(user_data: UserRegistration, request: Request):
         print(f"🔍 Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Registration failed")
 
-@app.get("/login/")
-async def login_user(name: str = Query(...), email: str = Query(...)):
+@app.post("/login/")
+@limiter.limit("5/minute")
+async def login_user(request: Request, name: str = Query(...), email: str = Query(...)):
     try:
         result = users_table.get_item(Key={"email": email})
         user = result.get("Item")
         if not user or user.get("name") != name:
             raise HTTPException(status_code=404, detail="User not found")
-        return convert_dynamodb_types(user)
+        token = create_jwt_token(email)
+        return {"user": convert_dynamodb_types(user), "token": token}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Login failed: {e}")
 
 @app.get("/get-properties/")
+@limiter.limit("5/minute")
 async def get_properties(
     lat: float, long: float,
     interestOne: str,
-    userAge: str, userCountry: str, userLanguage: str
+    userAge: str, userCountry: str, userLanguage: str,
+    request: Request,
+    user=Depends(get_current_user)
 ):
     try:
         # geohash_code = geohash.encode(lat, long, precision=6)
@@ -320,9 +359,12 @@ async def get_properties(
         raise HTTPException(status_code=500, detail=f"DynamoDB query failed: {str(e)}")
 
 @app.get("/landmark-response/")
+@limiter.limit("5/minute")
 async def get_landmark_response(
     landmark: str,
-    interest: str = Query("Nature", alias="interest[]"),  # Handle the axios array format
+    request: Request,
+    user=Depends(get_current_user),
+    interest: str = Query("Nature", alias="interest[]"),
     userCountry: str = "United States",
     semanticKey: str = "origin.general",
     age: int = 25
@@ -437,12 +479,15 @@ class LandmarkQuestion(BaseModel):
 # Remove the old function - now using semantic_matching_service
 
 @app.post("/ask-landmark")
+@limiter.limit("5/minute")
 async def ask_landmark_endpoint(
+    request: Request,
     landmark: str = Form(...),
+    userId: str = Form(...),
+    user=Depends(get_current_user),
     question: str = Form(None),
     userCountry: str = Form("United States"),
     interestOne: str = Form("Nature"),
-    userId: str = Form(...),
     sessionId: str = Form(None),
     audio_file: UploadFile = File(None)
 ):

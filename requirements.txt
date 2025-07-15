@@ -113,3 +113,4 @@ wcwidth==0.2.13
 SpeechRecognition==3.10.0
 pydub==0.25.1
 slowapi==0.1.9
+PyJWT==2.8.0

@@ -38,6 +38,11 @@ def main():
     # Upload semantic_config.json
     upload_file_to_s3("scripts/semantic_config.json", "config/semantic_config.json")
     
+    # Upload new registration option files
+    upload_file_to_s3("scripts/countries.json", "config/countries.json")
+    upload_file_to_s3("scripts/languages.json", "config/languages.json")
+    upload_file_to_s3("scripts/interests.json", "config/interests.json")
+    
     print("✅ Configuration upload complete!")
 
 if __name__ == "__main__":

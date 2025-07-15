@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Query, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, Query, File, UploadFile, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from boto3.dynamodb.conditions import Attr
 import boto3
 import uuid
@@ -15,6 +15,11 @@ from services.semantic_matching_service import semantic_matching_service
 from typing import List
 from utils.age_utils import AgeUtils
 from endpoints.ask_landmark import ask_landmark_question
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+import time
+from datetime import datetime, timedelta
 
 # === Load environment variables ===
 load_dotenv()
@@ -29,8 +34,20 @@ dynamodb = boto3.resource(
 landmarks_table = dynamodb.Table("Landmarks")
 users_table = dynamodb.Table("Users")
 
-# === FastAPI app ===
+# === Setup S3 ===
+s3_client = boto3.client(
+    "s3",
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name=os.getenv("AWS_REGION", "us-east-2")
+)
+S3_BUCKET = os.getenv("S3_BUCKET_NAME")
+
+# === Setup Rate Limiting ===
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,6 +57,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# === Pydantic Models for Validation ===
+class UserRegistration(BaseModel):
+    name: str
+    email: EmailStr
+    country: str
+    language: str
+    age: int
+    interestOne: str
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "John Doe",
+                "email": "john@example.com",
+                "country": "United States",
+                "language": "English",
+                "age": 25,
+                "interestOne": "Nature"
+            }
+        }
+
+# === Utility Functions ===
 def convert_dynamodb_types(obj):
     if isinstance(obj, list):
         return [convert_dynamodb_types(i) for i in obj]
@@ -49,31 +88,174 @@ def convert_dynamodb_types(obj):
         return float(obj) if "." in str(obj) else int(obj)
     return obj
 
-class User(BaseModel):
-    name: str
-    email: str
-    country: str
-    interestOne: str
-    age: str
-    language: str
+def get_options_from_s3(file_key: str) -> dict:
+    """Fetch options (countries, languages, interests) from S3"""
+    try:
+        response = s3_client.get_object(Bucket=S3_BUCKET, Key=file_key)
+        content = response['Body'].read().decode('utf-8')
+        return json.loads(content)
+    except Exception as e:
+        print(f"❌ Error fetching {file_key} from S3: {e}")
+        # Return default options if S3 fetch fails
+        if file_key == "config/countries.json":
+            return {"countries": ["United States", "India", "Canada", "Mexico"]}
+        elif file_key == "config/languages.json":
+            return {"languages": ["English", "Spanish", "Hindi"]}
+        elif file_key == "config/interests.json":
+            return {"interests": ["Nature", "History", "Food", "Museums", "Adventure", "Beaches", "Architecture", "Fitness", "Travel", "Technology"]}
+        return {"error": f"Failed to fetch {file_key}"}
+
+def validate_registration_data(data: UserRegistration) -> dict:
+    """Validate registration data and return validation errors"""
+    errors = {}
+    
+    # Validate name
+    if not data.name or len(data.name.strip()) < 2:
+        errors["name"] = "Name must be at least 2 characters long"
+    
+    # Validate age
+    if data.age < 13 or data.age > 120:
+        errors["age"] = "Age must be between 13 and 120"
+    
+    # Validate country (fetch from S3 and check)
+    try:
+        countries_data = get_options_from_s3("config/countries.json")
+        valid_countries = countries_data.get("countries", [])
+        if data.country not in valid_countries:
+            errors["country"] = f"Invalid country. Must be one of: {', '.join(valid_countries)}"
+    except Exception as e:
+        print(f"⚠️ Could not validate country: {e}")
+    
+    # Validate language (fetch from S3 and check)
+    try:
+        languages_data = get_options_from_s3("config/languages.json")
+        valid_languages = languages_data.get("languages", [])
+        if data.language not in valid_languages:
+            errors["language"] = f"Invalid language. Must be one of: {', '.join(valid_languages)}"
+    except Exception as e:
+        print(f"⚠️ Could not validate language: {e}")
+    
+    # Validate interest (fetch from S3 and check)
+    try:
+        interests_data = get_options_from_s3("config/interests.json")
+        valid_interests = interests_data.get("interests", [])
+        if data.interestOne not in valid_interests:
+            errors["interestOne"] = f"Invalid interest. Must be one of: {', '.join(valid_interests)}"
+    except Exception as e:
+        print(f"⚠️ Could not validate interest: {e}")
+    
+    return errors
+
+# === API Endpoints ===
+
+@app.get("/countries/")
+async def get_countries():
+    """Get list of available countries from S3"""
+    try:
+        countries_data = get_options_from_s3("config/countries.json")
+        return {
+            "status": "success",
+            "data": countries_data.get("countries", []),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        print(f"❌ Error in get_countries: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch countries")
+
+@app.get("/languages/")
+async def get_languages():
+    """Get list of available languages from S3"""
+    try:
+        languages_data = get_options_from_s3("config/languages.json")
+        return {
+            "status": "success",
+            "data": languages_data.get("languages", []),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        print(f"❌ Error in get_languages: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch languages")
+
+@app.get("/interests/")
+async def get_interests():
+    """Get list of available interests from S3"""
+    try:
+        interests_data = get_options_from_s3("config/interests.json")
+        return {
+            "status": "success",
+            "data": interests_data.get("interests", []),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        print(f"❌ Error in get_interests: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch interests")
 
 @app.post("/register-user/")
-async def register_user(user: User):
+@limiter.limit("5/minute")  # Rate limit: 5 requests per minute per IP
+async def register_user(user_data: UserRegistration, request):
+    """Register a new user with validation and rate limiting"""
     try:
+        print(f"🔐 Registration attempt from IP: {get_remote_address(request)}")
+        print(f"📝 User data: {user_data.dict()}")
+        
+        # Validate registration data
+        validation_errors = validate_registration_data(user_data)
+        if validation_errors:
+            print(f"❌ Validation errors: {validation_errors}")
+            raise HTTPException(
+                status_code=422, 
+                detail={
+                    "message": "Validation failed",
+                    "errors": validation_errors
+                }
+            )
+        
+        # Check if user already exists
+        existing_user = users_table.get_item(
+            Key={"email": user_data.email.lower()}
+        )
+        
+        if existing_user.get("Item"):
+            print(f"❌ User already exists: {user_data.email}")
+            raise HTTPException(
+                status_code=409, 
+                detail="User with this email already exists"
+            )
+        
+        # Generate user ID
         user_id = str(uuid.uuid4())
-        users_table.put_item(Item={
-            "email": user.email,
-            "name": user.name,
+        
+        # Create user item
+        user_item = {
             "user_id": user_id,
-            "country": user.country,
-            "interestOne": user.interestOne,
-            "age": user.age,
-            "language": user.language
-        })
-        return {"message": "User registered successfully", "user_id": user_id}
+            "name": user_data.name.strip(),
+            "email": user_data.email.lower().strip(),
+            "country": user_data.country,
+            "language": user_data.language,
+            "age": user_data.age,
+            "interestOne": user_data.interestOne,
+            "created_at": datetime.utcnow().isoformat(),
+            "last_login": datetime.utcnow().isoformat()
+        }
+        
+        # Store in DynamoDB
+        users_table.put_item(Item=user_item)
+        
+        print(f"✅ User registered successfully: {user_data.email}")
+        
+        return {
+            "status": "success",
+            "message": "User registered successfully",
+            "user_id": user_id,
+            "user": convert_dynamodb_types(user_item)
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to register user: {e}")
+        print(f"❌ Registration error: {e}")
+        print(f"🔍 Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Registration failed")
 
 @app.get("/login/")
 async def login_user(name: str = Query(...), email: str = Query(...)):

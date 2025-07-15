@@ -25,6 +25,7 @@ geographiclib==2.0
 geohash2==1.1
 geolib==1.0.7
 geomet==0.2.1.post1
+email-validator==2.1.0
 geopy==2.4.1
 google-api-core==2.24.2
 google-auth==2.39.0

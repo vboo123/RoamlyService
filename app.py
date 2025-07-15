@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query, File, UploadFile, Form, Depends
+from fastapi import FastAPI, HTTPException, Query, File, UploadFile, Form, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from boto3.dynamodb.conditions import Attr
@@ -192,7 +192,7 @@ async def get_interests():
 
 @app.post("/register-user/")
 @limiter.limit("5/minute")  # Rate limit: 5 requests per minute per IP
-async def register_user(user_data: UserRegistration, request):
+async def register_user(user_data: UserRegistration, request: Request):
     """Register a new user with validation and rate limiting"""
     try:
         print(f"🔐 Registration attempt from IP: {get_remote_address(request)}")

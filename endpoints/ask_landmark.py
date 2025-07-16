@@ -122,50 +122,34 @@ async def update_semantic_config(landmark_id: str, semantic_key: str, question_t
 
 async def ask_landmark_question(
     landmark: str = Form(...),
-    question: str = Form(None),
     userCountry: str = Form("United States"),
     interestOne: str = Form("Nature"),
     userId: str = Form(...),
-    sessionId: str = Form(None),
     audio_file: UploadFile = File(None),
-    age: str = Form("25")  # Change to str and convert later
+    age: str = Form("25")  
 ):
     """
     Handle landmark questions - always try specific answers first, then LLM fallback
     """
     try:
-        # Convert age to integer with better error handling
+        # Convert age to integer since form data is a string
         try:
             age_int = int(age) if age else 25
         except (ValueError, TypeError):
-            age_int = 25  # Default if conversion fails
+            age_int = 25 
         
-        print(f"🎯 Processing ask-landmark request: {landmark}, {userId}, age: {age_int}")
+        print(f"Processing ask-landmark request: {landmark}, {userId}, age: {age_int}")
         
         # 1. Pre-process inputs
         landmark_id = landmark.replace(" ", "_")
         
-        # Normalize country mapping
-        country_map = {
-            "UnitedStatesofAmerica": "United States",
-            "USA": "United States",
-            "US": "United States"
-        }
-        userCountry = country_map.get(userCountry, userCountry)
-        
         # 2. Get question text (from text or audio)
         question_text = None
         if audio_file:
-            print(f"🎤 Processing audio file: {audio_file.filename}")
             audio_content = await audio_file.read()
             file_extension = audio_file.filename.split(".")[-1] if "." in audio_file.filename else "m4a"
             question_text = await audio_processing_service.audio_to_text(audio_content, file_extension)
             print(f" Audio converted to question: '{question_text}'")
-        elif question:
-            question_text = question
-            print(f"📝 Processing text question: '{question_text}'")
-        else:
-            raise HTTPException(status_code=400, detail="Either question or audio_file must be provided")
         
         # 3. Semantic key mapping
         semantic_key, confidence = semantic_matching_service.get_landmark_specific_semantic_key(

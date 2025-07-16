@@ -481,11 +481,8 @@ class LandmarkQuestion(BaseModel):
 @app.post("/ask-landmark")
 @limiter.limit("5/minute")
 async def ask_landmark_endpoint(
-    request: Request,
     landmark: str = Form(...),
     userId: str = Form(...),
-    user=Depends(get_current_user),
-    question: str = Form(None),
     userCountry: str = Form("United States"),
     interestOne: str = Form("Nature"),
     sessionId: str = Form(None),
@@ -494,7 +491,6 @@ async def ask_landmark_endpoint(
     """Wrapper for the ask-landmark functionality"""
     return await ask_landmark_question(
         landmark=landmark,
-        question=question,
         userCountry=userCountry,
         interestOne=interestOne,
         userId=userId,

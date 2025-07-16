@@ -170,6 +170,8 @@ class SemanticMatchingService:
             landmark_type = None
             normalized_landmark_id = landmark_id.lower().replace("_", " ")
             
+            # we need to loop here since we need the landmark_type 
+            # since it is not passed in the API call
             for landmark in self.landmarks_data:
                 landmark_name_lower = landmark["name"].lower()
                 if landmark_name_lower == normalized_landmark_id:
@@ -178,14 +180,11 @@ class SemanticMatchingService:
             
             if not landmark_type:
                 print(f"⚠️ Landmark '{landmark_id}' not found in landmarks.json")
-                print(f"🔍 Looking for: '{normalized_landmark_id}'")
-                print(f"📋 Available landmarks: {[l['name'] for l in self.landmarks_data]}")
                 return None, None
             
             # 2. Get available semantic keys for this landmark type
             available_keys = list(self.semantic_config.get(landmark_type, {}).keys())
             print(f"🔍 Landmark: {landmark_id} -> Type: {landmark_type}")
-            print(f"📋 Available keys: {available_keys}")
             
             # 3. Use FAISS semantic matching
             question_emb = self.model.encode(question).reshape(1, -1).astype('float32')

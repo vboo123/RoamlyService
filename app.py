@@ -15,6 +15,8 @@ from services.semantic_matching_service import semantic_matching_service
 from typing import List
 from utils.age_utils import AgeUtils
 from endpoints.ask_landmark import ask_landmark_question
+from endpoints.optimized_ask_landmark import optimized_ask_landmark_question
+from endpoints.enhanced_landmark_response import enhanced_landmark_response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -370,105 +372,18 @@ async def get_landmark_response(
     age: int = 25
 ):
     """
-    Get landmark response based on user criteria
-    Args:
-        landmark: Landmark name
-        interest: Interest string (handles axios array format)
-        userCountry: User's country (defaults to "United States")
-        semanticKey: Semantic key to query (defaults to "origin.general")
-        age: User's age as integer (defaults to 25)
+    Enhanced landmark response using S3 Vector Search.
+    Preserves original functionality while leveraging vector search benefits.
     """
-    try:
-        print(f"🔍 landmark-response: {landmark}, {userCountry}, {interest}, {semanticKey}, {age}")
-        
-        # Normalize input
-        landmark_id = landmark.replace(" ", "_")
-        
-        # Use interest directly since it's now a string
-        user_interest = interest if interest else "Nature"
-        
-        # Classify age
-        age_group = AgeUtils.classify_age(age)
-
-        # Query the semantic_responses table
-        semantic_table = dynamodb.Table("semantic_responses")
-        response = semantic_table.get_item(
-            Key={
-                "landmark_id": landmark_id,
-                "semantic_key": semanticKey
-            }
-        )
-
-        item = response.get("Item")
-        if not item:
-            raise HTTPException(status_code=404, detail="No semantic response found")
-
-        # Fetch the consolidated JSON from S3
-        try:
-            json_response = requests.get(item["json_url"], timeout=10)
-            json_response.raise_for_status()
-            json_data = json_response.json()
-            
-            # Find the specific response based on user criteria
-            responses = json_data.get("responses", [])
-            best_response = None
-            
-            # Look for exact match: country + category + age_group
-            for resp in responses:
-                if (resp.get("user_country") == userCountry and 
-                    resp.get("mapped_category") == user_interest and
-                    resp.get("user_age") == age_group):
-                    best_response = resp["response"]
-                    break
-            
-            # Fallback: try country + category match
-            if not best_response:
-                for resp in responses:
-                    if (resp.get("user_country") == userCountry and 
-                        resp.get("mapped_category") == user_interest):
-                        best_response = resp["response"]
-                        break
-            
-            # Fallback: try just country match
-            if not best_response:
-                for resp in responses:
-                    if resp.get("user_country") == userCountry:
-                        best_response = resp["response"]
-                        break
-            
-            # Final fallback: use first available response
-            if not best_response and responses:
-                best_response = responses[0]["response"]
-            
-            return {
-                "landmark": landmark_id,
-                "semantic_key": semanticKey,
-                "country": userCountry,
-                "interest": user_interest,
-                "age": age,
-                "age_group": age_group,
-                "response": best_response or "No response found",
-                "json_url": item["json_url"],
-                "extracted_details": json_data.get("extracted_details", {}),
-                "specific_youtubes": json_data.get("specific_Youtubes", {})
-            }
-            
-        except requests.RequestException as e:
-            print(f"Failed to fetch response from S3: {e}")
-            return {
-                "landmark": landmark_id,
-                "semantic_key": semanticKey,
-                "country": userCountry,
-                "interest": user_interest,
-                "age": age,
-                "age_group": age_group,
-                "response": "Response content unavailable",
-                "json_url": item["json_url"],
-            }
-
-    except Exception as e:
-        print("🔥 ERROR in /landmark-response:", e)
-        raise HTTPException(status_code=500, detail=f"Failed to fetch semantic response: {str(e)}")
+    return await enhanced_landmark_response(
+        landmark=landmark,
+        request=request,
+        user=user,
+        interest=interest,
+        userCountry=userCountry,
+        semanticKey=semanticKey,
+        age=age
+    )
 
 class LandmarkQuestion(BaseModel):
     landmark: str
@@ -481,6 +396,7 @@ class LandmarkQuestion(BaseModel):
 @app.post("/ask-landmark")
 @limiter.limit("5/minute")
 async def ask_landmark_endpoint(
+    request: Request,
     landmark: str = Form(...),
     userId: str = Form(...),
     userCountry: str = Form("United States"),
@@ -496,4 +412,27 @@ async def ask_landmark_endpoint(
         userId=userId,
         sessionId=sessionId,
         audio_file=audio_file
+    )
+
+@app.post("/ask-landmark-optimized")
+@limiter.limit("5/minute")
+async def ask_landmark_optimized_endpoint(
+    request: Request,
+    landmark: str = Form(...),
+    userId: str = Form(...),
+    userCountry: str = Form("United States"),
+    interestOne: str = Form("Nature"),
+    sessionId: str = Form(None),
+    audio_file: UploadFile = File(None),
+    age: str = Form("25")
+):
+    """Optimized ask-landmark endpoint using S3 Vector Search"""
+    return await optimized_ask_landmark_question(
+        landmark=landmark,
+        userCountry=userCountry,
+        interestOne=interestOne,
+        userId=userId,
+        sessionId=sessionId,
+        audio_file=audio_file,
+        age=age
     )

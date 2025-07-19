@@ -7,14 +7,14 @@ from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
 from geolib import geohash
 import boto3
-import openai
+from openai import OpenAI
 
 import sys
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 # ---- Setup ----
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 dynamodb = boto3.resource(
     'dynamodb',
@@ -202,7 +202,7 @@ async def generate_and_store_consolidated_semantics(landmark_obj):
                     )
 
                     try:
-                        completion = openai.ChatCompletion.create(
+                        completion = client.chat.completions.create(
                             model="gpt-3.5-turbo",
                             messages=[
                                 {"role": "system", "content": "You are a friendly and knowledgeable travel guide."},
@@ -211,7 +211,7 @@ async def generate_and_store_consolidated_semantics(landmark_obj):
                             temperature=0.7,
                             max_tokens=500
                         )
-                        full_response = completion['choices'][0]['message']['content'].strip()
+                        full_response = completion.choices[0].message.content.strip()
                         
                         # Parse response to separate description from facts
                         description = full_response

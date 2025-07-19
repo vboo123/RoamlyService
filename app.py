@@ -22,6 +22,7 @@ import time
 from datetime import datetime, timedelta
 import jwt
 from jwt import PyJWTError
+import geohash
 
 # === Load environment variables ===
 load_dotenv()
@@ -314,8 +315,7 @@ async def get_properties(
     user=Depends(get_current_user)
 ):
     try:
-        # geohash_code = geohash.encode(lat, long, precision=6)
-        geohash_code = "9q60vc"
+        geohash_code = geohash.encode(lat, long, precision=6)
         print("Query geohash:", geohash_code)
 
         scan_results = landmarks_table.scan(
@@ -339,8 +339,7 @@ async def get_properties(
             filtered_responses = {key: responses_data.get(key) for key in keys_to_extract if key in responses_data}
 
             properties.append({
-                # "geohash": item.get("geohash"),
-                "geohash": "9q60vc",
+                "geohash": item.get("geohash"),
                 "latitude": item["coordinates"]["lat"],
                 "longitude": item["coordinates"]["lng"],
                 "landmarkName": landmark_name,

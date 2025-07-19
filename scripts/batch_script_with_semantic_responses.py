@@ -127,7 +127,7 @@ def insert_landmark_metadata(landmark_obj):
         print(f"❌ Skipping {name} due to missing coordinates")
         return
 
-    geohash_code = geohash.encode(lat, lon, precision=6)
+    geohash_code = geohash.encode(lat, lon, precision=2)
     landmark_table.put_item(Item={
         "landmark_id": name.replace(" ", "_"),
         "name": name,

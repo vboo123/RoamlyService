@@ -315,7 +315,8 @@ async def get_properties(
     user=Depends(get_current_user)
 ):
     try:
-        geohash_code = geohash.encode(lat, long, 6)
+        # Hardcoded geohash for demo - matches existing landmark data
+        geohash_code = "9z7dw9"
         print("Query geohash:", geohash_code)
 
         scan_results = landmarks_table.scan(

@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
+from typing import Optional
 import boto3
 import uuid
 import json
@@ -15,6 +16,7 @@ from datetime import datetime, timedelta
 import jwt
 from jwt import PyJWTError
 import hashlib
+from s3_operations import create_customer_bucket, deep_update, get_persona_from_s3, save_persona_to_s3, create_default_traveler_persona
 
 # === Load environment variables ===
 load_dotenv()
@@ -74,6 +76,31 @@ class UserLogin(BaseModel):
             "example": {
                 "username": "johndoe",
                 "password": "securepassword123"
+            }
+        }
+
+class UpdateTravelerPersonaRequest(BaseModel):
+    customerId: str
+    username: str
+    target: str  # "traveler", "trip", or "tour"
+    targetId: Optional[str] = None  # Required for trip and tour targets
+    updates: dict
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "customerId": "user_123",
+                "username": "alexjones",
+                "target": "traveler",
+                "targetId": None,
+                "updates": {
+                    "travel_persona": {
+                        "preferences": {
+                            "vibe": "Energetic",
+                            "focus": "Beach & Nightlife"
+                        }
+                    }
+                }
             }
         }
 
@@ -161,6 +188,115 @@ def get_current_user(request: Request):
 
 # === API Endpoints ===
 
+@app.post("/update-traveler-persona/")
+@limiter.limit("10/minute")  # Rate limit: 10 requests per minute per IP
+async def update_traveler_persona(request_data: UpdateTravelerPersonaRequest, request: Request):
+    """Update traveler persona data in S3"""
+    try:
+        print(f"🔄 Persona update attempt from IP: {get_remote_address(request)}")
+        print(f"📝 Update data: {request_data.dict()}")
+        
+        # Validate target and targetId
+        if request_data.target not in ["traveler", "trip", "tour"]:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid target. Must be 'traveler', 'trip', or 'tour'"
+            )
+        
+        if request_data.target in ["trip", "tour"] and (not request_data.targetId or request_data.targetId is None):
+            raise HTTPException(
+                status_code=422,
+                detail=f"targetId is required for target '{request_data.target}'"
+            )
+        
+        print(f"🔧 About to call create_customer_bucket with: {request_data.customerId}, {request_data.username}")
+        
+        # Create or ensure bucket exists
+        bucket_result = create_customer_bucket(request_data.customerId, request_data.username)
+        print(f"🔧 Bucket result: {bucket_result}")
+        
+        if bucket_result["status"] != "success":
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create/access bucket: {bucket_result['message']}"
+            )
+        
+        bucket_name = bucket_result["bucket_name"]
+        
+        # Determine the S3 key based on target
+        if request_data.target == "traveler":
+            key = "travelerPersona.json"
+        elif request_data.target == "trip":
+            key = f"trips/{request_data.targetId}_trip.json"
+        elif request_data.target == "tour":
+            key = f"tours/{request_data.targetId}_tour.json"
+        
+        # Get existing persona data
+        existing_data = get_persona_from_s3(bucket_name, key)
+        
+        # If no existing data and target is traveler, create default persona
+        if not existing_data and request_data.target == "traveler":
+            existing_data = create_default_traveler_persona(request_data.customerId, request_data.username)
+            print(f"📄 Created default traveler persona for {request_data.customerId}")
+        
+        # If no existing data for trip/tour, create empty structure
+        elif not existing_data and request_data.target in ["trip", "tour"]:
+            existing_data = {
+                "customerId": request_data.customerId,
+                "lastUpdated": datetime.utcnow().isoformat() + "Z"
+            }
+            if request_data.target == "trip":
+                existing_data.update({
+                    "trip_id": request_data.targetId,
+                    "location": {"city": "", "country": ""},
+                    "dates": {"start": "", "end": ""},
+                    "preferences": {},
+                    "itinerary_link": "",
+                    "custom_tours": {}
+                })
+            elif request_data.target == "tour":
+                existing_data.update({
+                    "tour_id": request_data.targetId,
+                    "trip_id": "",
+                    "tour_name": "",
+                    "date": "",
+                    "duration": "",
+                    "preferences": {},
+                    "notes": ""
+                })
+            print(f"📄 Created empty {request_data.target} persona for {request_data.targetId}")
+        
+        # Perform deep update
+        updated_data = deep_update(existing_data, request_data.updates)
+        
+        # Update lastUpdated timestamp
+        updated_data["lastUpdated"] = datetime.utcnow().isoformat() + "Z"
+        
+        # Save updated data to S3
+        save_success = save_persona_to_s3(bucket_name, key, updated_data)
+        
+        if not save_success:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save updated persona to S3"
+            )
+        
+        print(f"✅ Successfully updated {request_data.target} persona: {key}")
+        
+        return {
+            "status": "success",
+            "message": f"Successfully updated {request_data.target} persona",
+            "updatedKey": key,
+            "bucketName": bucket_name
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Persona update error: {e}")
+        print(f"🔍 Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Persona update failed: {str(e)}")
+
 @app.post("/register-user/")
 @limiter.limit("5/minute")  # Rate limit: 5 requests per minute per IP
 async def register_user(user_data: UserRegistration, request: Request):
@@ -211,6 +347,25 @@ async def register_user(user_data: UserRegistration, request: Request):
         }        
         # Store in DynamoDB
         users_table.put_item(Item=user_item)
+        
+        # Create initial traveler persona
+        try:
+            persona_update_request = UpdateTravelerPersonaRequest(
+                customerId=customer_id,
+                username=user_data.username,
+                target="traveler",
+                targetId=None,
+                updates={}  # Empty updates will create default persona
+            )
+            
+            # Call the update persona endpoint internally
+            persona_result = await update_traveler_persona(persona_update_request, request)
+            print(f"✅ Created initial traveler persona: {persona_result['updatedKey']}")
+            
+        except Exception as persona_error:
+            print(f"⚠️ Warning: Failed to create initial persona: {persona_error}")
+            # Don't fail registration if persona creation fails
+            # The persona can be created later
         
         print(f"✅ User registered successfully: {user_data.username}")
         
